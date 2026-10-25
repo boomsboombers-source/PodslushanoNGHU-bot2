@@ -3,18 +3,19 @@ import logging
 import os
 from datetime import datetime
 from aiogram import Bot, Dispatcher, F
-from aiogram.types import Message, FSInputFile
-from aiogram.filters import CommandStart
+from aiogram.types import Message, FSInputFile, ReplyKeyboardMarkup, KeyboardButton
+from aiogram.filters import CommandStart, Command
 from aiogram.enums import ParseMode
 
 # ================= НАСТРОЙКИ =================
-BOT_TOKEN = os.getenv("BOT_TOKEN")  # Токен берётся из переменных окружения
-CHANNEL_ID = -1002304148771  # <--- ID канала "Подслушано НГХУ"
-LOG_CHAT_ID = -1004306176378
-ADMIN_IDS = [1088467220]  # Список ID админов
+BOT_TOKEN = os.getenv("BOT_TOKEN")  # Токен из переменных окружения
+CHANNEL_ID = -1002304148771         # ID канала "Подслушано НГХУ"
+LOG_CHAT_ID = -1004306176378        # ID группы для логов
+ADMIN_IDS = [1088467220, 1690346204]            # Список ID админов
 WELCOME_IMAGE = "pictures/Podslushano.png"
-LOG_FILE = "messages.txt"
-USERS_FILE = "users.txt"
+LOG_FILE = "data/messages.txt"
+USERS_FILE = "data/users.txt"
+SCHEDULE_FILE = "data/schedule.txt"      # Файл, где хранится ID картинки расписания
 
 # ================= ИНИЦИАЛИЗАЦИЯ =================
 logging.basicConfig(level=logging.INFO)
@@ -33,11 +34,26 @@ def save_user(user_id):
         with open(USERS_FILE, "a") as f:
             f.write(str(user_id) + "\n")
 
+def ensure_data_dir():
+    if not os.path.exists("data"):
+        os.makedirs("data")
+
 def get_all_users():
     if not os.path.exists(USERS_FILE):
         return []
     with open(USERS_FILE, "r") as f:
         return f.read().splitlines()
+
+# Клавиатура с постоянной кнопкой расписания внизу
+def get_main_keyboard():
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="📅 Расписание репетиций")]
+        ],
+        resize_keyboard=True,        # Аккуратный размер кнопки
+        is_persistent=True,          # Кнопка всегда висит внизу
+        input_field_placeholder="Напиши сообщение для канала..."
+    )
 
 # ================= ОБРАБОТЧИКИ =================
 
@@ -52,13 +68,57 @@ async def cmd_start(message: Message):
                 "👋 <b>Привет!</b>\n\n"
                 "Этот бот отправляет анонимные сообщения в канал <b>Подслушано НГХУ</b>.\n\n"
                 "Просто напиши сюда текст или прикрепи фото/видео/стикер — оно будет опубликовано анонимно.\n\n"
+                "📅 Чтобы узнать расписание репетиций, нажми на кнопку ниже или введи /schedule.\n\n"
                 "⚠️ <i>Пожалуйста, соблюдай правила приличия и не спамь.</i>"
             ),
-            parse_mode=ParseMode.HTML
+            parse_mode=ParseMode.HTML,
+            reply_markup=get_main_keyboard()
         )
     except Exception as e:
         logging.error(f"Ошибка при отправке картинки: {e}")
-        await message.answer("Привет! Бот работает. Напиши сообщение, и я его отправлю.")
+        await message.answer(
+            "Привет! Бот работает. Напиши сообщение, и я его отправлю.",
+            reply_markup=get_main_keyboard()
+        )
+
+# --- ОТПРАВКА РАСПИСАНИЯ (Кнопка и команда /schedule) ---
+@dp.message(F.text == "📅 Расписание репетиций")
+@dp.message(Command("schedule"))
+async def show_schedule(message: Message):
+    if not os.path.exists(SCHEDULE_FILE):
+        await message.answer("❌ Расписание пока не загружено. Попробуй позже.")
+        return
+    
+    with open(SCHEDULE_FILE, "r") as f:
+        photo_id = f.read().strip()
+    
+    if not photo_id:
+        await message.answer("❌ Расписание пока не загружено. Попробуй позже.")
+        return
+    
+    try:
+        await bot.send_photo(
+            chat_id=message.from_user.id,
+            photo=photo_id,
+            caption="📅 <b>Актуальное расписание репетиций</b>",
+            parse_mode=ParseMode.HTML
+        )
+    except Exception as e:
+        logging.error(f"Ошибка отправки расписания: {e}")
+        await message.answer("❌ Не удалось загрузить расписание. Попробуй позже.")
+
+# --- ЗАГРУЗКА РАСПИСАНИЯ АДМИНОМ (!расписание) ---
+@dp.message(F.photo, F.caption == "!расписание")
+async def set_schedule(message: Message):
+    if message.from_user.id not in ADMIN_IDS:
+        return  # Игнорируем, если это не админ
+    
+    photo_id = message.photo[-1].file_id
+    
+    with open(SCHEDULE_FILE, "w") as f:
+        f.write(photo_id)
+    
+    await message.answer("✅ Расписание успешно обновлено! Теперь ученики будут получать эту картинку.")
 
 # --- ЕДИНЫЙ ОБРАБОТЧИК ДЛЯ ВСЕХ ТИПОВ СООБЩЕНИЙ ---
 @dp.message(F.text | F.photo | F.video | F.audio | F.document | F.voice | F.video_note | F.sticker)
@@ -67,12 +127,15 @@ async def handle_all_messages(message: Message):
     text = message.text or message.caption or ""
     now = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
 
+    # Пропускаем служебные команды
+    if text in ["📅 Расписание репетиций", "/schedule", "!расписание"]:
+        return
+
     # --- ЛОГИКА РАССЫЛКИ ---
     if user.id in ADMIN_IDS and text.startswith("!рассылка"):
         
         clean_text = text.replace("!рассылка", "").strip()
         
-        # Проверка: если пусто и нет вложений — отмена
         if not clean_text and not message.photo and not message.video and not message.document and not message.audio and not message.voice and not message.video_note and not message.sticker:
             await message.answer("❌ Текст рассылки пустой. Напиши: !рассылка Твой текст")
             return
@@ -110,67 +173,34 @@ async def handle_all_messages(message: Message):
         return
     # -----------------------
 
-    # Если это обычное сообщение от пользователя - публикуем в канал
+    # Публикация в канал
     save_user(user.id)
     
-    # Подпись с юзернеймом бота
     signature = "\n\n📬 @PodslushanoNGHU_bot"
 
     try:
         if message.photo:
-            await bot.send_photo(
-                chat_id=CHANNEL_ID,
-                photo=message.photo[-1].file_id,
-                caption=(message.caption or "") + signature
-            )
+            await bot.send_photo(chat_id=CHANNEL_ID, photo=message.photo[-1].file_id, caption=(message.caption or "") + signature)
         elif message.video:
-            await bot.send_video(
-                chat_id=CHANNEL_ID,
-                video=message.video.file_id,
-                caption=(message.caption or "") + signature
-            )
+            await bot.send_video(chat_id=CHANNEL_ID, video=message.video.file_id, caption=(message.caption or "") + signature)
         elif message.document:
-            await bot.send_document(
-                chat_id=CHANNEL_ID,
-                document=message.document.file_id,
-                caption=(message.caption or "") + signature
-            )
+            await bot.send_document(chat_id=CHANNEL_ID, document=message.document.file_id, caption=(message.caption or "") + signature)
         elif message.audio:
-            await bot.send_audio(
-                chat_id=CHANNEL_ID,
-                audio=message.audio.file_id,
-                caption=(message.caption or "") + signature
-            )
+            await bot.send_audio(chat_id=CHANNEL_ID, audio=message.audio.file_id, caption=(message.caption or "") + signature)
         elif message.voice:
-            await bot.send_voice(
-                chat_id=CHANNEL_ID,
-                voice=message.voice.file_id,
-                caption=(message.caption or "") + signature
-            )
+            await bot.send_voice(chat_id=CHANNEL_ID, voice=message.voice.file_id, caption=(message.caption or "") + signature)
         elif message.video_note:
-            # У кружочков нет подписи
-            await bot.send_video_note(
-                chat_id=CHANNEL_ID,
-                video_note=message.video_note.file_id
-            )
+            await bot.send_video_note(chat_id=CHANNEL_ID, video_note=message.video_note.file_id)
         elif message.sticker:
-            # У стикеров нет подписи
-            await bot.send_sticker(
-                chat_id=CHANNEL_ID,
-                sticker=message.sticker.file_id
-            )
+            await bot.send_sticker(chat_id=CHANNEL_ID, sticker=message.sticker.file_id)
         else:
-            # Если это просто текст
-            await bot.send_message(
-                chat_id=CHANNEL_ID,
-                text=text + signature
-            )
+            await bot.send_message(chat_id=CHANNEL_ID, text=text + signature)
     except Exception as e:
         logging.error(f"Не удалось отправить в канал: {e}")
         await message.answer("❌ Ошибка: не удалось отправить сообщение в канал. Проверь права бота.")
         return
 
-    # Формируем лог
+    # Логи
     username = f"@{user.username}" if user.username else "нет username"
     log_text = (
         f"👤 <b>Автор:</b> {user.full_name}\n"
@@ -186,7 +216,6 @@ async def handle_all_messages(message: Message):
     except Exception as e:
         logging.error(f"Не удалось отправить лог в чат: {e}")
 
-    # Дублируем в файл
     try:
         with open(LOG_FILE, "a", encoding="utf-8") as f:
             f.write(f"[{now}] {user.full_name} ({username}, ID: {user.id})\n")
@@ -199,11 +228,11 @@ async def handle_all_messages(message: Message):
 
 @dp.message()
 async def handle_other_messages(message: Message):
-    # Ловит всё остальное (локации, контакты и т.д.)
     await message.answer("⚠️ Пожалуйста, отправляй текст, фото, видео, аудио или стикеры.")
 
 # ================= ЗАПУСК =================
 async def main():
+    ensure_data_dir()
     print("Бот запущен. Ожидание сообщений...")
     await dp.start_polling(bot)
 
