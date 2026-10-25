@@ -8,17 +8,22 @@ from aiogram.filters import CommandStart, Command
 from aiogram.enums import ParseMode
 
 # ================= НАСТРОЙКИ =================
-BOT_TOKEN = os.getenv("BOT_TOKEN")  # Токен из переменных окружения
-CHANNEL_ID = -1002304148771         # ID канала "Подслушано НГХУ"
-LOG_CHAT_ID = -1004306176378        # ID группы для логов
-ADMIN_IDS = [1088467220, 1690346204]            # Список ID админов
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+CHANNEL_ID = -1002304148771
+LOG_CHAT_ID = -1004306176378
+ADMIN_IDS = [1088467220, 1690346204]
 WELCOME_IMAGE = "pictures/Podslushano.png"
 LOG_FILE = "data/messages.txt"
 USERS_FILE = "data/users.txt"
-SCHEDULE_FILE = "data/schedule.txt"      # Файл, где хранится ID картинки расписания
+SCHEDULE_FILE = "data/schedule.txt"
 
 # ================= ИНИЦИАЛИЗАЦИЯ =================
 logging.basicConfig(level=logging.INFO)
+
+# Создаем папку data ДО запуска бота
+if not os.path.exists("data"):
+    os.makedirs("data")
+
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
@@ -34,24 +39,19 @@ def save_user(user_id):
         with open(USERS_FILE, "a") as f:
             f.write(str(user_id) + "\n")
 
-def ensure_data_dir():
-    if not os.path.exists("data"):
-        os.makedirs("data")
-
 def get_all_users():
     if not os.path.exists(USERS_FILE):
         return []
     with open(USERS_FILE, "r") as f:
         return f.read().splitlines()
 
-# Клавиатура с постоянной кнопкой расписания внизу
 def get_main_keyboard():
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text="📅 Расписание репетиций")]
         ],
-        resize_keyboard=True,        # Аккуратный размер кнопки
-        is_persistent=True,          # Кнопка всегда висит внизу
+        resize_keyboard=True,
+        is_persistent=True,
         input_field_placeholder="Напиши сообщение для канала..."
     )
 
@@ -69,7 +69,7 @@ async def cmd_start(message: Message):
                 "Этот бот отправляет анонимные сообщения в канал <b>Подслушано НГХУ</b>.\n\n"
                 "Просто напиши сюда текст или прикрепи фото/видео/стикер — оно будет опубликовано анонимно.\n\n"
                 "📅 Чтобы узнать расписание репетиций, нажми на кнопку ниже или введи /schedule.\n\n"
-                "⚠️ <i><b>За оскорбления, травлю и другие ситуации администрация ответсвенности не несет! Пожалуйста, соблюдай правила приличия и не спамь. </b></i>"
+                "⚠️ <i><b>За оскорбления, травлю и другие ситуации администрация ответственности не несет! Пожалуйста, соблюдай правила приличия и не спамь.</b></i>"
             ),
             parse_mode=ParseMode.HTML,
             reply_markup=get_main_keyboard()
@@ -81,7 +81,6 @@ async def cmd_start(message: Message):
             reply_markup=get_main_keyboard()
         )
 
-# --- ОТПРАВКА РАСПИСАНИЯ (Кнопка и команда /schedule) ---
 @dp.message(F.text == "📅 Расписание репетиций")
 @dp.message(Command("schedule"))
 async def show_schedule(message: Message):
@@ -107,11 +106,10 @@ async def show_schedule(message: Message):
         logging.error(f"Ошибка отправки расписания: {e}")
         await message.answer("❌ Не удалось загрузить расписание. Попробуй позже.")
 
-# --- ЗАГРУЗКА РАСПИСАНИЯ АДМИНОМ (!расписание) ---
-@dp.message(F.photo, F.caption == "!расписание")
+@dp.message(F.photo, F.caption.startswith("!расписание"))
 async def set_schedule(message: Message):
     if message.from_user.id not in ADMIN_IDS:
-        return  # Игнорируем, если это не админ
+        return
     
     photo_id = message.photo[-1].file_id
     
@@ -120,21 +118,20 @@ async def set_schedule(message: Message):
     
     await message.answer("✅ Расписание успешно обновлено! Теперь ученики будут получать эту картинку.")
 
-# --- ЕДИНЫЙ ОБРАБОТЧИК ДЛЯ ВСЕХ ТИПОВ СООБЩЕНИЙ ---
 @dp.message(F.text | F.photo | F.video | F.audio | F.document | F.voice | F.video_note | F.sticker)
 async def handle_all_messages(message: Message):
     user = message.from_user
     text = message.text or message.caption or ""
     now = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
 
-    # Пропускаем служебные команды
-    if text in ["📅 Расписание репетиций", "/schedule", "!расписание"]:
+    # Пропускаем служебные команды (включая если текст начинается с !расписание)
+    if text in ["📅 Расписание репетиций", "/schedule"] or text.startswith("!расписание"):
         return
 
     # --- ЛОГИКА РАССЫЛКИ ---
-    if user.id in ADMIN_IDS and text.startswith("!рассылка"):
+    if user.id in ADMIN_IDS and text.lower().startswith("!рассылка"):
         
-        clean_text = text.replace("!рассылка", "").strip()
+        clean_text = text.replace("!рассылка", "").replace("!Рассылка", "").strip()
         
         if not clean_text and not message.photo and not message.video and not message.document and not message.audio and not message.voice and not message.video_note and not message.sticker:
             await message.answer("❌ Текст рассылки пустой. Напиши: !рассылка Твой текст")
@@ -175,7 +172,6 @@ async def handle_all_messages(message: Message):
 
     # Публикация в канал
     save_user(user.id)
-    
     signature = "\n\n📬 @PodslushanoNGHU_bot"
 
     try:
@@ -232,7 +228,6 @@ async def handle_other_messages(message: Message):
 
 # ================= ЗАПУСК =================
 async def main():
-    ensure_data_dir()
     print("Бот запущен. Ожидание сообщений...")
     await dp.start_polling(bot)
 
