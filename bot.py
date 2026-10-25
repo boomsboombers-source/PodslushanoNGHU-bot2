@@ -9,7 +9,7 @@ from aiogram.enums import ParseMode
 
 # ================= НАСТРОЙКИ =================
 BOT_TOKEN = os.getenv("BOT_TOKEN")  # Токен берётся из переменных окружения
-CHANNEL_ID = -1002304148771
+CHANNEL_ID = -1002304148771  # <--- ID канала "Подслушано НГХУ"
 LOG_CHAT_ID = -1004306176378
 ADMIN_IDS = [1088467220]  # Список ID админов
 WELCOME_IMAGE = "pictures/Podslushano.png"
