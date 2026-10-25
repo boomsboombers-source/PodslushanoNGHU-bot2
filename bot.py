@@ -30,6 +30,7 @@ WELCOME_IMAGE = "pictures/Podslushano.png"
 LOG_FILE = "data/messages.txt"      # Файл с текстовыми логами
 USERS_FILE = "data/users.txt"       # Файл со списком ID пользователей (для рассылки)
 SCHEDULE_FILE = "data/schedule.txt" # Файл с ID картинки расписания
+USERNAMES_FILE = "data/usernames.txt" # Файл для хранения связки @username -> ID
 
 # ==============================================================================
 # ================= ИНИЦИАЛИЗАЦИЯ ==============================================
@@ -77,6 +78,41 @@ def get_main_keyboard():
         is_persistent=True,  # Кнопка всегда висит внизу экрана
         input_field_placeholder="Напиши сообщение для канала..."
     )
+
+def save_username(username, user_id):
+    """Сохраняет связку @username -> ID в файл."""
+    if not username:
+        return
+    username = username.lower() # Приводим к нижнему регистру для надежности
+    if not os.path.exists(USERNAMES_FILE):
+        with open(USERNAMES_FILE, "w") as f:
+            f.write(f"{username}:{user_id}\n")
+        return
+    
+    with open(USERNAMES_FILE, "r") as f:
+        lines = f.read().splitlines()
+    
+    # Проверяем, есть ли уже такой юзернейм
+    for i, line in enumerate(lines):
+        if line.startswith(f"{username}:"):
+            lines[i] = f"{username}:{user_id}" # Обновляем ID, если изменился
+            break
+    else:
+        lines.append(f"{username}:{user_id}") # Добавляем новый
+    
+    with open(USERNAMES_FILE, "w") as f:
+        f.write("\n".join(lines) + "\n")
+
+def get_id_by_username(username):
+    """Ищет ID по юзернейму в файле."""
+    username = username.lower().replace("@", "") # Убираем @ на всякий случай
+    if not os.path.exists(USERNAMES_FILE):
+        return None
+    with open(USERNAMES_FILE, "r") as f:
+        for line in f:
+            if line.startswith(f"{username}:"):
+                return int(line.split(":")[1])
+    return None
 
 # ==============================================================================
 # ================= ОБРАБОТЧИКИ КОМАНД =========================================
