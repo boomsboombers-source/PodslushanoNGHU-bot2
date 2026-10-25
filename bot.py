@@ -12,7 +12,7 @@ from aiogram.enums import ParseMode, ContentType
 # ==============================================================================
 
 # Токен берется из переменных окружения (на Bothost он задается в панели управления)
-BOT_TOKEN = "8916405519:AAEvdXI81-_La8J4M3LNG0K8kJA5tHdsAzo"#os.getenv("BOT_TOKEN")
+BOT_TOKEN = os.getenv("BOT_TOKEN")
 
 # ID канала, куда бот будет публиковать анонимные сообщения
 CHANNEL_ID = -1002304148771
