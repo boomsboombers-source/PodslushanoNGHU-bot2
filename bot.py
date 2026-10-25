@@ -8,10 +8,10 @@ from aiogram.filters import CommandStart
 from aiogram.enums import ParseMode
 
 # ================= НАСТРОЙКИ =================
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-CHANNEL_ID = -1002304148771
+BOT_TOKEN = os.getenv("BOT_TOKEN")  # Токен берётся из переменных окружения
+CHANNEL_ID = -1002264446353
 LOG_CHAT_ID = -1004306176378
-ADMIN_IDS = [1088467220]      # Список ID админов [xxxx, xxxx]
+ADMIN_IDS = [1088467220]  # Список ID админов
 WELCOME_IMAGE = "pictures/Podslushano.png"
 LOG_FILE = "messages.txt"
 USERS_FILE = "users.txt"
@@ -51,8 +51,7 @@ async def cmd_start(message: Message):
             caption=(
                 "👋 <b>Привет!</b>\n\n"
                 "Этот бот отправляет анонимные сообщения в канал <b>Подслушано НГХУ</b>.\n\n"
-                "Просто напиши сюда текст — он будет опубликован анонимно. "
-                "Твоё имя в канале видно не будет.\n\n"
+                "Просто напиши сюда текст или прикрепи фото/видео/стикер — оно будет опубликовано анонимно.\n\n"
                 "⚠️ <i>Пожалуйста, соблюдай правила приличия и не спамь.</i>"
             ),
             parse_mode=ParseMode.HTML
@@ -61,8 +60,8 @@ async def cmd_start(message: Message):
         logging.error(f"Ошибка при отправке картинки: {e}")
         await message.answer("Привет! Бот работает. Напиши сообщение, и я его отправлю.")
 
-# --- ЕДИНЫЙ ОБРАБОТЧИК ДЛЯ ВСЕХ ТИПОВ СООБЩЕНИЙ (ТЕКСТ, ФОТО, ВИДЕО, АУДИО) ---
-@dp.message(F.text | F.photo | F.video | F.audio | F.document | F.voice | F.video_note)
+# --- ЕДИНЫЙ ОБРАБОТЧИК ДЛЯ ВСЕХ ТИПОВ СООБЩЕНИЙ ---
+@dp.message(F.text | F.photo | F.video | F.audio | F.document | F.voice | F.video_note | F.sticker)
 async def handle_all_messages(message: Message):
     user = message.from_user
     text = message.text or message.caption or ""
@@ -71,11 +70,10 @@ async def handle_all_messages(message: Message):
     # --- ЛОГИКА РАССЫЛКИ ---
     if user.id in ADMIN_IDS and text.startswith("!рассылка"):
         
-        # 1. Получаем чистый текст (убираем команду)
         clean_text = text.replace("!рассылка", "").strip()
         
-        # Если после удаления команды ничего не осталось, а картинки нет — отмена
-        if not clean_text and not message.photo and not message.video and not message.document and not message.audio and not message.voice and not message.video_note:
+        # Проверка: если пусто и нет вложений — отмена
+        if not clean_text and not message.photo and not message.video and not message.document and not message.audio and not message.voice and not message.video_note and not message.sticker:
             await message.answer("❌ Текст рассылки пустой. Напиши: !рассылка Твой текст")
             return
         
@@ -85,9 +83,7 @@ async def handle_all_messages(message: Message):
         success = 0
         for uid in users:
             try:
-                # Проверяем, есть ли в сообщении вложение (фото, видео и т.д.)
-                if message.photo or message.video or message.document or message.audio or message.voice or message.video_note:
-                    # Если есть вложение, отправляем его с чистым текстом (или без него)
+                if message.photo or message.video or message.document or message.audio or message.voice or message.video_note or message.sticker:
                     if message.photo:
                         await bot.send_photo(int(uid), photo=message.photo[-1].file_id, caption=clean_text)
                     elif message.video:
@@ -100,8 +96,9 @@ async def handle_all_messages(message: Message):
                         await bot.send_voice(int(uid), voice=message.voice.file_id, caption=clean_text)
                     elif message.video_note:
                         await bot.send_video_note(int(uid), video_note=message.video_note.file_id)
+                    elif message.sticker:
+                        await bot.send_sticker(int(uid), sticker=message.sticker.file_id)
                 else:
-                    # Если это просто текст, отправляем его
                     await bot.send_message(int(uid), clean_text, parse_mode=ParseMode.HTML)
                 
                 success += 1
@@ -120,7 +117,6 @@ async def handle_all_messages(message: Message):
     signature = "\n\n📬 @PodslushanoNGHU_bot"
 
     try:
-        # Проверяем, есть ли вложение, и отправляем с подписью
         if message.photo:
             await bot.send_photo(
                 chat_id=CHANNEL_ID,
@@ -152,10 +148,16 @@ async def handle_all_messages(message: Message):
                 caption=(message.caption or "") + signature
             )
         elif message.video_note:
-            # У кружочков нет подписи, отправляем как есть
+            # У кружочков нет подписи
             await bot.send_video_note(
                 chat_id=CHANNEL_ID,
                 video_note=message.video_note.file_id
+            )
+        elif message.sticker:
+            # У стикеров нет подписи
+            await bot.send_sticker(
+                chat_id=CHANNEL_ID,
+                sticker=message.sticker.file_id
             )
         else:
             # Если это просто текст
@@ -180,7 +182,6 @@ async def handle_all_messages(message: Message):
     )
 
     try:
-        # Отправляем лог в группу (текстом, без вложения, чтобы не засорять)
         await bot.send_message(LOG_CHAT_ID, log_text, parse_mode=ParseMode.HTML)
     except Exception as e:
         logging.error(f"Не удалось отправить лог в чат: {e}")
@@ -198,8 +199,8 @@ async def handle_all_messages(message: Message):
 
 @dp.message()
 async def handle_other_messages(message: Message):
-    # Ловит всё остальное (стикеры, локации и т.д.), если не попадёт под фильтр выше
-    await message.answer("⚠️ Пожалуйста, отправляй текст, фото, видео или аудио.")
+    # Ловит всё остальное (локации, контакты и т.д.)
+    await message.answer("⚠️ Пожалуйста, отправляй текст, фото, видео, аудио или стикеры.")
 
 # ================= ЗАПУСК =================
 async def main():
