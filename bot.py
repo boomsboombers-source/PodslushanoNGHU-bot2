@@ -442,6 +442,28 @@ async def admin_menu_handler(callback: CallbackQuery):
         )
     await callback.answer()
 
+@dp.callback_query(F.data == "reply_to_post")
+async def ask_for_reply(callback: CallbackQuery):
+    """
+    Обработчик нажатия на кнопку "Ответить" под постом в канале.
+    Сохраняет ID поста и перекидывает пользователя в бота.
+    """
+    BOT_USERNAME = "PodslushanoNGHU_bot"
+    
+    # 1. Сохраняем ID поста, на который хотим ответить
+    active_replies[callback.from_user.id] = callback.message.message_id
+    mark_replies_dirty()
+    
+    # 2. Перекидываем пользователя в бота через deep-link (?start=reply)
+    # ВАЖНО: обычные ссылки Telegram здесь не принимает, только ?start=...
+    try:
+        await callback.answer(
+            url=f"https://t.me/{BOT_USERNAME}?start=reply"
+        )
+    except Exception:
+        # Если url не сработал (например, пользователь в веб-версии), просто закрываем колбэк
+        await callback.answer("Открой бота в личных сообщениях!", show_alert=True)
+
 # ==============================================================================
 # ================= ОБРАБОТЧИКИ КОМАНД =========================================
 # ==============================================================================
