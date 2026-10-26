@@ -15,25 +15,36 @@ from aiogram.enums import ParseMode, ContentType
 # ================= НАСТРОЙКИ БОТА (МЕНЯТЬ ТОЛЬКО ЗДЕСЬ) =======================
 # ==============================================================================
 
+# Токен берется из переменных окружения (на Bothost он задается в панели управления)
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-CHANNEL_ID = -1002304148771       # ID канала
-LOG_CHAT_ID = -1004306176378      # ID группы логов
-ADMIN_IDS = [1088467220, 1690346204] # ID админов
 
+# ID канала, куда бот будет публиковать анонимные сообщения
+CHANNEL_ID = -1002304148771
+
+# ID группы, куда бот будет присылать логи (кто, что и когда написал)
+LOG_CHAT_ID = -1004306176378
+
+# Список ID пользователей, которые имеют права администратора (могут делать рассылку, менять расписание и т.д.)
+ADMIN_IDS = [1088467220, 1690346204]
+
+# Путь к картинке, которая отправляется при команде /start
 WELCOME_IMAGE = "pictures/Podslushano.png"
 
-LOG_FILE = "data/messages.txt"
-USERS_FILE = "data/users.txt"
-SCHEDULE_FILE = "data/schedule.txt"
-USERNAMES_FILE = "data/usernames.txt"
-REPLIES_FILE = "data/replies.json"
+# Пути к файлам для хранения данных (в папке data, чтобы не сбрасывались при деплое)
+LOG_FILE = "data/messages.txt"        # Файл с текстовыми логами
+USERS_FILE = "data/users.txt"         # Файл со списком ID пользователей (для рассылки)
+SCHEDULE_FILE = "data/schedule.txt"   # Файл с ID картинки расписания
+USERNAMES_FILE = "data/usernames.txt" # Файл со связками @username -> ID
+REPLIES_FILE = "data/replies.json"    # Файл для хранения активных ответов (чтобы не терялись при перезапуске)
 
 # ==============================================================================
 # ================= ИНИЦИАЛИЗАЦИЯ ==============================================
 # ==============================================================================
 
+# Настройка логирования (вывод в консоль с датой и временем)
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
+# Создаем папку data ДО запуска бота, чтобы файлы могли сохраняться
 if not os.path.exists("data"):
     os.makedirs("data")
 
@@ -41,8 +52,11 @@ bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
 # Хранилище: {user_id: message_id_в_канале}
+# Нужно, чтобы бот знал, на какой пост в канале отвечает пользователь
 active_replies = {}
+
 # Кэш всех пользователей в памяти (для быстрой рассылки)
+# Загружается один раз при старте, чтобы не читать файл 1000 раз
 cached_users = set()
 
 # ==============================================================================
@@ -75,40 +89,50 @@ def get_all_users() -> list[str]:
     return list(cached_users)
 
 def get_main_keyboard() -> ReplyKeyboardMarkup:
+    """Создает и возвращает нижнюю клавиатуру с кнопкой расписания."""
     return ReplyKeyboardMarkup(
         keyboard=[[KeyboardButton(text="📅 Расписание репетиций")]],
-        resize_keyboard=True,
-        is_persistent=True,
+        resize_keyboard=True,      # Аккуратный размер кнопки
+        is_persistent=True,        # Кнопка всегда висит внизу экрана
         input_field_placeholder="Напиши сообщение для канала..."
     )
 
 def save_username(username: str, user_id: int):
+    """
+    Сохраняет связку @username -> ID в файл. 
+    Использует атомарную запись (через .tmp), чтобы файл не повредился при сбое.
+    """
     if not username:
         return
     username = username.lower().lstrip('@')
     temp_file = USERNAMES_FILE + ".tmp"
+    
     lines = []
     if os.path.exists(USERNAMES_FILE):
         with open(USERNAMES_FILE, "r", encoding="utf-8") as f:
             lines = f.read().splitlines()
+
     updated = False
     for i, line in enumerate(lines):
         if line.startswith(f"{username}:"):
             lines[i] = f"{username}:{user_id}"
             updated = True
             break
+    
     if not updated:
         lines.append(f"{username}:{user_id}")
+
     try:
         with open(temp_file, "w", encoding="utf-8") as f:
             f.write("\n".join(lines) + "\n")
-        os.replace(temp_file, USERNAMES_FILE)
+        os.replace(temp_file, USERNAMES_FILE) # Атомарная замена
     except Exception as e:
         logging.error(f"Ошибка сохранения юзернейма {username}: {e}")
         if os.path.exists(temp_file):
             os.remove(temp_file)
 
 def get_id_by_username(username: str) -> int | None:
+    """Ищет ID по юзернейму в локальном файле (если пользователь скрыт от Telegram)."""
     username = username.lower().lstrip('@')
     if not os.path.exists(USERNAMES_FILE):
         return None
@@ -121,18 +145,20 @@ def get_id_by_username(username: str) -> int | None:
                     continue
     return None
 
-# --- ФУНКЦИИ ДЛЯ СОХРАНЕНИЯ ОТВЕТОВ (АТОМАРНО) ---
 def load_replies():
+    """Загружает активные ответы из файла при старте."""
     global active_replies
     if os.path.exists(REPLIES_FILE):
         try:
             with open(REPLIES_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
+                # Ключи в JSON всегда строки, конвертируем обратно в int
                 active_replies = {int(k): v for k, v in data.items()}
         except Exception as e:
             logging.error(f"Ошибка загрузки replies.json: {e}")
 
 def save_replies():
+    """Сохраняет активные ответы в файл при каждом изменении (атомарно)."""
     try:
         temp_file = REPLIES_FILE + ".tmp"
         with open(temp_file, "w", encoding="utf-8") as f:
@@ -141,8 +167,12 @@ def save_replies():
     except Exception as e:
         logging.error(f"Ошибка сохранения replies.json: {e}")
 
-# --- УНИВЕРСАЛЬНАЯ ОТПРАВКА ---
 async def _send_media_with_caption(target_id: int, message: Message, caption: str = "", parse_mode=None, reply_to_message_id: int = None) -> Message:
+    """
+    Универсальная функция. Отправляет любой тип медиа/текста и ВОЗВРАЩАЕТ объект сообщения.
+    Параметр reply_to_message_id позволяет сделать сообщение "ответом" на другое.
+    Используется везде: в рассылке, в !лс, в публикации в канал и в ответах.
+    """
     try:
         if message.photo:
             return await bot.send_photo(target_id, photo=message.photo[-1].file_id, caption=caption, parse_mode=parse_mode, reply_to_message_id=reply_to_message_id)
@@ -174,9 +204,21 @@ async def _send_media_with_caption(target_id: int, message: Message, caption: st
 
 @dp.message(CommandStart())
 async def cmd_start(message: Message):
+    """Обработчик команды /start. Отправляет приветствие и клавиатуру."""
     save_user(message.from_user.id)
     save_username(message.from_user.username, message.from_user.id)
     
+    # --- ПРОВЕРКА: ЕСЛИ ПЕРЕШЛИ ПО КНОПКЕ "ОТВЕТИТЬ" ---
+    # Telegram присылает это как "/start reply"
+    if message.text and "reply" in message.text:
+        await message.answer(
+            "✍️ <b>Отлично!</b> Напиши или прикрепи то, что хочешь отправить в ответ на пост (это будет анонимно):",
+            parse_mode=ParseMode.HTML,
+            reply_markup=get_main_keyboard()
+        )
+        return # Прерываем выполнение, чтобы не показывать длинное приветствие
+
+    # --- СТАНДАРТНОЕ ПРИВЕТСТВИЕ ---
     if not os.path.exists(WELCOME_IMAGE):
         await message.answer("👋 Привет! Бот работает.", reply_markup=get_main_keyboard())
         return
@@ -216,44 +258,10 @@ async def cmd_start(message: Message):
         logging.error(f"Ошибка при отправке картинки /start: {e}")
         await message.answer("👋 Привет! Бот работает.", reply_markup=get_main_keyboard())
 
-@dp.message(CommandStart())
-async def cmd_start(message: Message):
-    save_user(message.from_user.id)
-    save_username(message.from_user.username, message.from_user.id)
-    
-    # --- ПРОВЕРКА: ЕСЛИ ПЕРЕШЛИ ПО КНОПКЕ "ОТВЕТИТЬ" ---
-    # В Telegram команда приходит как "/start reply"
-    if message.text and "reply" in message.text:
-        await message.answer(
-            "✍️ <b>Отлично!</b> Напиши или прикрепи то, что хочешь отправить в ответ на пост (это будет анонимно):",
-            parse_mode=ParseMode.HTML,
-            reply_markup=get_main_keyboard() # Оставляем кнопку расписания
-        )
-        return # Прерываем выполнение, чтобы не показывать приветствие
-    # ----------------------------------------------------
-
-    # Стандартное приветствие (если это обычный /start)
-    if not os.path.exists(WELCOME_IMAGE):
-        await message.answer("👋 Привет! Бот работает.", reply_markup=get_main_keyboard())
-        return
-
-    try:
-        photo = FSInputFile(WELCOME_IMAGE)
-        await message.answer_photo(
-            photo=photo,
-            caption=(
-                # ... (твой длинный текст приветствия, который мы делали ранее) ...
-            ),
-            parse_mode=ParseMode.HTML,
-            reply_markup=get_main_keyboard()
-        )
-    except Exception as e:
-        logging.error(f"Ошибка при отправке картинки /start: {e}")
-        await message.answer("👋 Привет! Бот работает.", reply_markup=get_main_keyboard())
-
 @dp.message(F.text == "📅 Расписание репетиций")
 @dp.message(Command("schedule"))
 async def show_schedule(message: Message):
+    """Обработчик кнопки и команды /schedule. Отправляет картинку расписания."""
     if not os.path.exists(SCHEDULE_FILE):
         await message.answer("❌ Расписание пока не загружено. Попробуй позже.")
         return
@@ -275,6 +283,7 @@ async def show_schedule(message: Message):
 
 @dp.message((F.text | F.caption).startswith("!расписание"), F.from_user.id.in_(ADMIN_IDS))
 async def set_schedule(message: Message):
+    """Обработчик команды !расписание (только для админов). Сохраняет ID картинки."""
     if not message.photo:
         await message.answer("❌ Пришлите команду вместе с картинкой расписания.")
         return
@@ -289,18 +298,19 @@ async def set_schedule(message: Message):
 
 @dp.callback_query(F.data == "reply_to_post")
 async def ask_for_reply(callback: CallbackQuery):
+    """Обработчик нажатия на кнопку 'Ответить' под постом в канале."""
     BOT_USERNAME = "PodslushanoNGHU_bot"
     
-    # 1. Сохраняем ID поста
+    # 1. Сохраняем ID поста, на который хотим ответить
     active_replies[callback.from_user.id] = callback.message.message_id
     save_replies()
     
-    # 2. Перекидываем в бота (ОБЯЗАТЕЛЬНО с ?start=reply)
+    # 2. Перекидываем пользователя в бота через deep-link (?start=reply)
     await callback.answer(
         url=f"https://t.me/{BOT_USERNAME}?start=reply"
     )
     
-    # 3. Отправляем сообщение в ЛС
+    # 3. Отправляем сообщение в ЛС (на случай, если пользователь уже в боте)
     try:
         await bot.send_message(
             chat_id=callback.from_user.id, 
@@ -311,6 +321,7 @@ async def ask_for_reply(callback: CallbackQuery):
 
 @dp.callback_query()
 async def handle_unknown_callback(callback: CallbackQuery):
+    """Защита от 'зависших' кнопок (если придет неизвестный callback)."""
     await callback.answer("Кнопка устарела или недействительна.", show_alert=True)
 
 # ==============================================================================
@@ -323,6 +334,7 @@ async def handle_unknown_callback(callback: CallbackQuery):
     ContentType.CONTACT, ContentType.LOCATION
 ]))
 async def handle_all_messages(message: Message):
+    """Главный обработчик. Принимает все типы сообщений и распределяет их."""
     user = message.from_user
     text = message.text or message.caption or ""
     now = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
@@ -330,11 +342,12 @@ async def handle_all_messages(message: Message):
     save_user(user.id)
     save_username(user.username, user.id)
 
-    # Если пользователь в режиме ответа, но прислал служебную команду — сбрасываем
+    # Если пользователь в режиме ответа, но прислал служебную команду — сбрасываем режим
     if user.id in active_replies and (text in ["📅 Расписание репетиций", "/schedule"] or text.lower().startswith("!")):
         del active_replies[user.id]
         save_replies()
 
+    # Пропускаем служебные команды, чтобы они не улетели в канал
     if text in ["📅 Расписание репетиций", "/schedule"] or text.lower().startswith("!расписание"):
         return
 
@@ -372,12 +385,14 @@ async def handle_all_messages(message: Message):
                 reply_to_message_id=original_msg_id
             )
             
+            # Формируем ссылку на отправленный ответ для лога
             chat_id_str = str(CHANNEL_ID).replace("-100", "") 
             reply_link = f"https://t.me/c/{chat_id_str}/{sent_reply.message_id}"
             reply_kb = InlineKeyboardMarkup(
                 inline_keyboard=[[InlineKeyboardButton(text="🔗 Перейти к ответу", url=reply_link)]]
             )
 
+            # Логируем ответ
             log_text = (
                 f"💬 <b>Ответ</b>\n"
                 f"👤 <b>Автор:</b> {user.full_name}\n"
@@ -389,6 +404,7 @@ async def handle_all_messages(message: Message):
             )
             await bot.send_message(LOG_CHAT_ID, log_text, parse_mode=ParseMode.HTML, reply_markup=reply_kb)
             
+            # Дублируем в файл
             with open(LOG_FILE, "a", encoding="utf-8") as f:
                 f.write(f"[{now}] {user.full_name} ({user.username}, ID: {user.id}) - ОТВЕТ\n")
                 f.write(f"Тип: {message.content_type}. Текст: {text}\n")
@@ -407,7 +423,7 @@ async def handle_all_messages(message: Message):
             await message.answer("❌ Текст рассылки пустой.")
             return
         
-        users = get_all_users() # Берем из кэша (мгновенно)
+        users = get_all_users() 
         if not users:
             await message.answer("❌ База пользователей пуста.")
             return
@@ -521,6 +537,7 @@ async def handle_all_messages(message: Message):
 
 @dp.message()
 async def handle_other_messages(message: Message):
+    """Ловит всё остальное (геолокации, контакты и т.д.)."""
     save_user(message.from_user.id)
     save_username(message.from_user.username, message.from_user.id)
     await message.answer("⚠️ Пожалуйста, отправляй текст, фото, видео, аудио, стикеры или геолокацию.")
