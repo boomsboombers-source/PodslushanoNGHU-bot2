@@ -477,6 +477,11 @@ async def cmd_start(message: Message):
     if message.text and "reply" in message.text:
         await message.answer("✍️ <b>Отлично!</b> Напиши или прикрепи то, что хочешь отправить в ответ на пост:", parse_mode=ParseMode.HTML, reply_markup=get_main_keyboard())
         return
+    
+    # НОВАЯ ПРОВЕРКА ДЛЯ КНОПКИ "НОВОЕ СООБЩЕНИЕ"
+    if message.text and "new" in message.text:
+        await message.answer("📩 <b>Напиши или прикрепи сообщение, которое хочешь отправить в канал анонимно:</b>", parse_mode=ParseMode.HTML, reply_markup=get_main_keyboard())
+        return
 
     if not os.path.exists(WELCOME_IMAGE):
         await message.answer("👋 Привет! Бот работает.", reply_markup=get_main_keyboard())
@@ -694,7 +699,12 @@ async def handle_all_messages(message: Message):
         mark_replies_dirty()
 
         reply_caption = f"{esc(text)}\n\n📬 @PodslushanoNGHU_bot" if text else "📬 @PodslushanoNGHU_bot"
-        answer_kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="💬 Ответить", callback_data="reply_to_post")]])
+        answer_kb = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="💬 Ответить", callback_data="reply_to_post"),
+            InlineKeyboardButton(text="📩 Новое сообщение", url="https://t.me/PodslushanoNGHU_bot?start=new")
+        ]
+    ])
 
         try:
             sent_reply = await _send_media_with_caption(CHANNEL_ID, message, caption=reply_caption, parse_mode=ParseMode.HTML, reply_to_message_id=original_msg_id)
@@ -737,7 +747,12 @@ async def handle_all_messages(message: Message):
 
     # --- ПУБЛИКАЦИЯ В КАНАЛ (ОБЫЧНОЕ СООБЩЕНИЕ) ---
     signature = "\n\n📬 @PodslushanoNGHU_bot"
-    reply_kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="💬 Ответить", callback_data="reply_to_post")]])
+    reply_kb = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="💬 Ответить", callback_data="reply_to_post"),
+            InlineKeyboardButton(text="📩 Новое сообщение", url="https://t.me/PodslushanoNGHU_bot?start=new")
+        ]
+    ])
 
     caption_out = (esc(text) + signature) if text else ""
 
