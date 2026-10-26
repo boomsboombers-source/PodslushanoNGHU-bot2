@@ -254,22 +254,27 @@ async def set_schedule(message: Message):
 
 @dp.callback_query(F.data == "reply_to_post")
 async def ask_for_reply(callback: CallbackQuery):
-    await callback.answer() # Убираем "часики" с кнопки
+    # ВАЖНО: Вставь сюда юзернейм своего бота без @
+    BOT_USERNAME = "PodslushanoNGHU_bot" 
     
-    # Сохраняем ID поста в канал, на который отвечаем
+    # 1. Сохраняем ID поста в память (чтобы знать, на что отвечаем)
     active_replies[callback.from_user.id] = callback.message.message_id
     save_replies()
     
-    # Отправляем сообщение В ЛИЧКУ пользователю (callback.from_user.id)
+    # 2. Перекидываем пользователя в бота (без всплывающего текста)
+    await callback.answer(
+        url=f"https://t.me/{BOT_USERNAME}"
+    )
+    
+    # 3. Отправляем сообщение в ЛС
     try:
         await bot.send_message(
             chat_id=callback.from_user.id, 
             text="✍️ Напиши или прикрепи то, что хочешь отправить в ответ на это сообщение (это будет анонимно):"
         )
     except Exception as e:
-        # Если пользователь заблокировал бота, он не получит сообщение в ЛС
+        # Если пользователь заблокировал бота, просто пишем в лог
         logging.error(f"Не удалось отправить ЛС пользователю {callback.from_user.id}: {e}")
-        await callback.answer("Пожалуйста, сначала запустите бота в личных сообщениях (/start), чтобы отвечать на посты!", show_alert=True)
 
 @dp.callback_query()
 async def handle_unknown_callback(callback: CallbackQuery):
