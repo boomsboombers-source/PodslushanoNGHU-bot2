@@ -390,14 +390,18 @@ async def _send_media_with_caption(
 # ================= АДМИН-ПАНЕЛЬ (ИНЛАЙН МЕНЮ) =================================
 # ==============================================================================
 
+# Обработчик для /admin и /админ (слэш)
 @dp.message(Command("admin", "админ"))
+# Обработчик для !admin и !админ (восклицательный знак)
+@dp.message(F.text.lower().in_(["!admin", "!админ"]))
 async def admin_panel(message: Message):
     """
-    Обработчик команд /admin, !админ, !admin.
-    Показывает инлайн-меню с кнопками управления. Доступен только админам.
+    Показывает инлайн-меню.
+    Срабатывает на /admin, /админ, !admin, !админ.
     """
     if message.from_user.id not in ADMIN_IDS:
         return
+    
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📊 Статистика", callback_data="admin_stats")],
         [InlineKeyboardButton(text="📢 Рассылка", callback_data="admin_broadcast_info")],
