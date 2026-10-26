@@ -376,7 +376,13 @@ async def handle_all_messages(message: Message):
         # Формируем текст с обычной подписью (без плашки "Ответ на пост")
         reply_caption = f"{text}\n\n📬 @PodslushanoNGHU_bot" if text else "📬 @PodslushanoNGHU_bot"
         
+        # Создаем кнопку "Ответить" для самого ответа (чтобы можно было отвечать на ответы)
+        answer_kb = InlineKeyboardMarkup(
+            inline_keyboard=[[InlineKeyboardButton(text="💬 Ответить", callback_data="reply_to_post")]]
+        )
+        
         try:
+            # Отправляем ответ в канал
             sent_reply = await _send_media_with_caption(
                 CHANNEL_ID, 
                 message, 
@@ -385,10 +391,20 @@ async def handle_all_messages(message: Message):
                 reply_to_message_id=original_msg_id
             )
             
+            # ПРИКРЕПЛЯЕМ КНОПКУ "ОТВЕТИТЬ" К САМОМУ ОТВЕТУ
+            try:
+                await bot.edit_message_reply_markup(
+                    chat_id=CHANNEL_ID,
+                    message_id=sent_reply.message_id,
+                    reply_markup=answer_kb
+                )
+            except Exception as e:
+                logging.error(f"Не удалось прикрепить кнопку к ответу: {e}")
+            
             # Формируем ссылку на отправленный ответ для лога
             chat_id_str = str(CHANNEL_ID).replace("-100", "") 
             reply_link = f"https://t.me/c/{chat_id_str}/{sent_reply.message_id}"
-            reply_kb = InlineKeyboardMarkup(
+            log_kb = InlineKeyboardMarkup(
                 inline_keyboard=[[InlineKeyboardButton(text="🔗 Перейти к ответу", url=reply_link)]]
             )
 
@@ -402,7 +418,7 @@ async def handle_all_messages(message: Message):
                 f"📝 <b>Тип:</b> {message.content_type}\n"
                 f"📝 <b>Текст/Подпись:</b> {text}"
             )
-            await bot.send_message(LOG_CHAT_ID, log_text, parse_mode=ParseMode.HTML, reply_markup=reply_kb)
+            await bot.send_message(LOG_CHAT_ID, log_text, parse_mode=ParseMode.HTML, reply_markup=log_kb)
             
             # Дублируем в файл
             with open(LOG_FILE, "a", encoding="utf-8") as f:
