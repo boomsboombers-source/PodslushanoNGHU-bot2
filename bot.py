@@ -410,7 +410,16 @@ async def handle_all_messages(message: Message):
                 f.write(f"Тип: {message.content_type}. Текст: {text}\n")
                 f.write("-" * 40 + "\n")
                 
-            await message.answer("✅ Твой анонимный ответ опубликован в канале!")
+            # Создаем кнопку со ссылкой на канал
+            channel_kb = InlineKeyboardMarkup(
+                inline_keyboard=[[InlineKeyboardButton(text="📢 Перейти в канал", url="https://t.me/+rgCZ7wpZaIE0YmZi")]]
+            )
+            
+            # Отправляем подтверждение вместе с кнопкой
+            await message.answer(
+                "✅ Твой анонимный ответ опубликован в канале!", 
+                reply_markup=channel_kb
+            )
         except Exception as e:
             logging.error(f"Ошибка отправки ответа в канал: {e}")
             await message.answer("❌ Не удалось отправить ответ. Возможно, пост был удален.")
