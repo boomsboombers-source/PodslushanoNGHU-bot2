@@ -522,12 +522,27 @@ async def handle_all_messages(message: Message):
         await message.answer(f"⛔ Вы временно не можете отправлять сообщения. Осталось: <b>{minutes} мин.</b>", parse_mode=ParseMode.HTML)
         return
 
+    # --- ГЛОБАЛЬНАЯ ЗАЩИТА ОТ СЛУЧАЙНОЙ ПУБЛИКАЦИИ КОМАНД ---
+    # Если админ пишет команду с "!" и она не распознана ниже — не отправляем в канал
+    if user.id in ADMIN_IDS and text.startswith("!"):
+        # Список всех известных админских команд (для проверки)
+        known_admin_commands = [
+            "!отложка", "!кнопка", "!статистика", 
+            "!очистить_ответы", "!рассылка", "!лс", "!админ", "!admin"
+        ]
+        # Если команда не начинается ни с одной из известных — блокируем
+        if not any(text.lower().startswith(cmd) for cmd in known_admin_commands):
+            await message.answer("❓ Неизвестная команда. Введите !админ для списка доступных команд.")
+            return
+    # ------------------------------------------------------------------
+
     # Сброс режима ответа при вводе команды
     if user.id in active_replies and (text in ["📅 Расписание репетиций", "/schedule"] or text.lower().startswith("!")):
         del active_replies[user.id]
         mark_replies_dirty()
 
-    if text in ["📅 Расписание репетиций", "/schedule"] or text.lower().startswith("!расписание"):
+    # Пропускаем служебные команды, чтобы они не улетели в канал
+    if text in ["📅 Расписание репетиций", "/schedule", "/admin", "!админ", "!admin"] or text.lower().startswith("!расписание"):
         return
 
     # --- АДМИНСКИЕ КОМАНДЫ ---
