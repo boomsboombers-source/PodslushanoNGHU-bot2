@@ -254,10 +254,22 @@ async def set_schedule(message: Message):
 
 @dp.callback_query(F.data == "reply_to_post")
 async def ask_for_reply(callback: CallbackQuery):
-    await callback.answer()
+    await callback.answer() # Убираем "часики" с кнопки
+    
+    # Сохраняем ID поста в канал, на который отвечаем
     active_replies[callback.from_user.id] = callback.message.message_id
     save_replies()
-    await callback.message.answer("✍️ Напиши или прикрепи то, что хочешь отправить в ответ на это сообщение (это будет анонимно):")
+    
+    # Отправляем сообщение В ЛИЧКУ пользователю (callback.from_user.id)
+    try:
+        await bot.send_message(
+            chat_id=callback.from_user.id, 
+            text="✍️ Напиши или прикрепи то, что хочешь отправить в ответ на это сообщение (это будет анонимно):"
+        )
+    except Exception as e:
+        # Если пользователь заблокировал бота, он не получит сообщение в ЛС
+        logging.error(f"Не удалось отправить ЛС пользователю {callback.from_user.id}: {e}")
+        await callback.answer("Пожалуйста, сначала запустите бота в личных сообщениях (/start), чтобы отвечать на посты!", show_alert=True)
 
 @dp.callback_query()
 async def handle_unknown_callback(callback: CallbackQuery):
