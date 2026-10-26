@@ -216,6 +216,41 @@ async def cmd_start(message: Message):
         logging.error(f"Ошибка при отправке картинки /start: {e}")
         await message.answer("👋 Привет! Бот работает.", reply_markup=get_main_keyboard())
 
+@dp.message(CommandStart())
+async def cmd_start(message: Message):
+    save_user(message.from_user.id)
+    save_username(message.from_user.username, message.from_user.id)
+    
+    # --- ПРОВЕРКА: ЕСЛИ ПЕРЕШЛИ ПО КНОПКЕ "ОТВЕТИТЬ" ---
+    # В Telegram команда приходит как "/start reply"
+    if message.text and "reply" in message.text:
+        await message.answer(
+            "✍️ <b>Отлично!</b> Напиши или прикрепи то, что хочешь отправить в ответ на пост (это будет анонимно):",
+            parse_mode=ParseMode.HTML,
+            reply_markup=get_main_keyboard() # Оставляем кнопку расписания
+        )
+        return # Прерываем выполнение, чтобы не показывать приветствие
+    # ----------------------------------------------------
+
+    # Стандартное приветствие (если это обычный /start)
+    if not os.path.exists(WELCOME_IMAGE):
+        await message.answer("👋 Привет! Бот работает.", reply_markup=get_main_keyboard())
+        return
+
+    try:
+        photo = FSInputFile(WELCOME_IMAGE)
+        await message.answer_photo(
+            photo=photo,
+            caption=(
+                # ... (твой длинный текст приветствия, который мы делали ранее) ...
+            ),
+            parse_mode=ParseMode.HTML,
+            reply_markup=get_main_keyboard()
+        )
+    except Exception as e:
+        logging.error(f"Ошибка при отправке картинки /start: {e}")
+        await message.answer("👋 Привет! Бот работает.", reply_markup=get_main_keyboard())
+
 @dp.message(F.text == "📅 Расписание репетиций")
 @dp.message(Command("schedule"))
 async def show_schedule(message: Message):
@@ -254,16 +289,15 @@ async def set_schedule(message: Message):
 
 @dp.callback_query(F.data == "reply_to_post")
 async def ask_for_reply(callback: CallbackQuery):
-    # ВАЖНО: Вставь сюда юзернейм своего бота без @
-    BOT_USERNAME = "PodslushanoNGHU_bot" 
+    BOT_USERNAME = "PodslushanoNGHU_bot"
     
-    # 1. Сохраняем ID поста в память (чтобы знать, на что отвечаем)
+    # 1. Сохраняем ID поста
     active_replies[callback.from_user.id] = callback.message.message_id
     save_replies()
     
-    # 2. Перекидываем пользователя в бота (без всплывающего текста)
+    # 2. Перекидываем в бота (ОБЯЗАТЕЛЬНО с ?start=reply)
     await callback.answer(
-        url=f"https://t.me/{BOT_USERNAME}"
+        url=f"https://t.me/{BOT_USERNAME}?start=reply"
     )
     
     # 3. Отправляем сообщение в ЛС
@@ -273,8 +307,7 @@ async def ask_for_reply(callback: CallbackQuery):
             text="✍️ Напиши или прикрепи то, что хочешь отправить в ответ на это сообщение (это будет анонимно):"
         )
     except Exception as e:
-        # Если пользователь заблокировал бота, просто пишем в лог
-        logging.error(f"Не удалось отправить ЛС пользователю {callback.from_user.id}: {e}")
+        logging.error(f"Не удалось отправить ЛС: {e}")
 
 @dp.callback_query()
 async def handle_unknown_callback(callback: CallbackQuery):
