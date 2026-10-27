@@ -266,9 +266,9 @@ def load_delayed():
                 valid.append(post)
         delayed_posts = valid
     except Exception as e:
-            logging.error(f"Ошибка загрузки delayed.json: {e}")
-            os.replace(DELAYED_FILE, DELAYED_FILE + ".bak")
-            delayed_posts = []
+        logging.error(f"Ошибка загрузки delayed.json: {e}")
+        os.replace(DELAYED_FILE, DELAYED_FILE + ".bak")
+        delayed_posts = []
 
 async def _send_media_with_caption(target_id: int, message: Message, caption: str = "", parse_mode=None, reply_to_message_id: int = None) -> Message:
     if message.photo: return await bot.send_photo(target_id, photo=message.photo[-1].file_id, caption=caption, parse_mode=parse_mode, reply_to_message_id=reply_to_message_id)
@@ -433,10 +433,438 @@ async def show_schedule(message: Message):
         logging.error(f"Ошибка расписания: {e}")
         await message.answer("❌ Не удалось загрузить расписание.")
 
-# ==============================================================================
-# ================= ОСНОВНОЙ ОБРАБОТЧИК СООБЩЕНИЙ ==============================
-# ==============================================================================
-
 @dp.message(F.content_type.in_([
     ContentType.TEXT, ContentType.PHOTO, ContentType.VIDEO, ContentType.AUDIO,
-    ContentType.DOCUMENT, ContentType.VOICE, ContentType.VIDEO
+    ContentType.DOCUMENT, ContentType.VOICE, ContentType.VIDEO_NOTE, ContentType.STICKER,
+    ContentType.CONTACT, ContentType.LOCATION
+]))
+async def handle_all_messages(message: Message):
+    if message.chat.type != "private": return
+
+    user = message.from_user
+    text = message.text or message.caption or ""
+    now = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
+
+    await save_user(user.id)
+    await save_username(user.username, user.id)
+
+    # --- ПРОВЕРКА НА МУТ ---
+    mute_remaining = check_mute(user.id)
+    if mute_remaining is not None:
+        minutes = mute_remaining // 60
+        await message.answer(f"⛔ Вы временно не можете отправлять сообщения. Осталось: <b>{minutes} мин.</b>", parse_mode=ParseMode.HTML)
+        return
+
+    # --- ГЛОБАЛЬНАЯ ЗАЩИТА ОТ СЛУЧАЙНОЙ ПУБЛИКАЦИИ КОМАНД ---
+    if user.id in ADMIN_IDS and text.startswith("!"):
+        known_admin_commands = [
+            "!отложка", "!кнопка", "!статистика", 
+            "!очистить_ответы", "!рассылка", "!лс", 
+            "!админ", "!admin", "!расписание"
+        ]
+        if not any(text.lower().startswith(cmd) for cmd in known_admin_commands):
+            await message.answer("❓ Неизвестная команда. Введите !админ для списка доступных команд.")
+            return
+
+    # Сброс режима ответа при вводе команды
+    if user.id in active_replies and (text in ["📅 Расписание репетиций", "/schedule"] or text.lower().startswith("!")):
+        del active_replies[user.id]
+        mark_replies_dirty()
+
+    # Пропускаем служебные команды, чтобы они не улетели в канал
+    if text in ["📅 Расписание репетиций", "/schedule", "/admin", "!админ", "!admin"]:
+        return
+
+    # --- АДМИНСКИЕ КОМАНДЫ ---
+    if user.id in ADMIN_IDS:
+        
+        # 0. Обновление расписания
+        if text.lower().startswith("!расписание"):
+            if not message.photo:
+                await message.answer("❌ Пришлите команду вместе с картинкой расписания.")
+                return
+            try:
+                with open(SCHEDULE_FILE, "w", encoding="utf-8") as f:
+                    f.write(message.photo[-1].file_id)
+                await message.answer("✅ Расписание успешно обновлено!")
+            except Exception as e:
+                await message.answer(f"❌ Ошибка сохранения: {e}")
+            return
+
+        # 1. Отложенный пост
+        if text.lower().startswith("!отложка"):
+            source = message.text or message.caption or ""
+            parts = source.split(maxsplit=2)
+            if len(parts) < 3:
+                await message.answer("❌ Формат: !отложка ЧЧ:ММ Текст")
+                return
+            try:
+                h, m = map(int, parts[1].split(":"))
+                now_dt = datetime.now()
+                target_dt = now_dt.replace(hour=h, minute=m, second=0, microsecond=0)
+                if target_dt < now_dt:
+                    target_dt += timedelta(days=1)
+
+                post_data = serialize_message(message)
+                post_data["text"] = parts[2].strip()
+
+                if post_data["type"] in ("video_note", "sticker") and post_data["text"]:
+                    await message.answer("⚠️ У кружочков и стикеров нет подписи — текст не будет опубликован.")
+
+                post_data["time"] = target_dt.timestamp()
+                delayed_posts.append(post_data)
+                with open(DELAYED_FILE, "w", encoding="utf-8") as f:
+                    json.dump(delayed_posts, f)
+
+                await message.answer(f"⏰ Пост будет опубликован в {target_dt.strftime('%H:%M')}.")
+            except Exception as e:
+                await message.answer(f"❌ Ошибка: {e}")
+            return
+
+        # 2. Кнопка к старому посту
+        if text.lower().startswith("!кнопка"):
+            parts = text.split()
+            if len(parts) < 2:
+                await message.answer("❌ Формат: !кнопка ID")
+                return
+            try:
+                msg_id = int(parts[1])
+                reply_kb = InlineKeyboardMarkup(inline_keyboard=[
+                    [
+                        InlineKeyboardButton(text="💬 Ответить", callback_data="reply_to_post"),
+                        InlineKeyboardButton(text="📩 Новое сообщение", url="https://t.me/PodslushanoNGHU_bot?start=new")
+                    ]
+                ])
+                await bot.edit_message_reply_markup(chat_id=CHANNEL_ID, message_id=msg_id, reply_markup=reply_kb)
+                await message.answer(f"✅ Кнопки добавлены к {msg_id}.")
+            except TelegramBadRequest as e:
+                if "message can't be edited" in str(e):
+                    await message.answer("❌ Нельзя редактировать: сообщение принадлежит не боту или слишком старое.")
+                else:
+                    await message.answer(f"❌ Ошибка: {e}")
+            return
+
+        # 3. Статистика
+        if text.lower().startswith("!статистика"):
+            await message.answer(f"📊 Пользователей: {len(cached_users)}\n💬 В ожидании: {len(active_replies)}\n🔇 В муте: {len(muted_users)}")
+            return
+
+        # 4. Очистка ответов
+        if text.lower().startswith("!очистить_ответы"):
+            active_replies.clear()
+            mark_replies_dirty()
+            await message.answer("✅ Очищено.")
+            return
+
+        # 5. Рассылка
+        if text.lower().startswith("!рассылка"):
+            clean_text = text.partition("!рассылка")[2].strip()
+            if not clean_text and not message.photo and not message.video:
+                await message.answer("❌ Текст пуст.")
+                return
+            users = get_all_users()
+            await message.answer(f"🚀 Рассылка для {len(users)}...")
+            success = 0
+            for uid_str in users:
+                try:
+                    await _send_media_with_caption(int(uid_str), message, caption=clean_text, parse_mode=ParseMode.HTML)
+                    success += 1
+                    await asyncio.sleep(0.1)
+                except Exception as e:
+                    logging.warning(f"Не отправлено {uid_str}: {e}")
+            await message.answer(f"✅ Отправлено: {success} из {len(users)}.")
+            return
+
+        # 6. Личное сообщение
+        if text.lower().startswith("!лс"):
+            parts = text.split(maxsplit=2)
+            if len(parts) < 2:
+                await message.answer("❌ Формат: !лс ID|@username Текст")
+                return
+            target = parts[1]
+            if len(parts) < 3 or not parts[2].strip():
+                if not message.photo and not message.video:
+                    await message.answer("❌ Текст сообщения пуст.")
+                    return
+
+            try:
+                if target.startswith("@") or not target.isdigit():
+                    target_id = get_id_by_username(target.lstrip('@'))
+                    if not target_id:
+                        chat = await bot.get_chat(target)
+                        target_id = chat.id
+                        await save_username(target, target_id)
+                else:
+                    target_id = int(target)
+            except Exception:
+                await message.answer("❌ Пользователь не найден.")
+                return
+            dm_text = parts[2] if len(parts) > 2 else ""
+            try:
+                await _send_media_with_caption(target_id, message, caption=dm_text, parse_mode=ParseMode.HTML)
+                await message.answer("✅ Отправлено.")
+            except Exception:
+                await message.answer("❌ Ошибка отправки.")
+            return
+
+    # --- ЛОГИКА ОТВЕТА НА СООБЩЕНИЕ ---
+    if user.id in active_replies:
+        original_msg_id = active_replies.pop(user.id)
+        mark_replies_dirty()
+
+        reply_caption = f"{esc(text)}\n\n📬 @PodslushanoNGHU_bot" if text else "📬 @PodslushanoNGHU_bot"
+        
+        answer_kb = InlineKeyboardMarkup(inline_keyboard=[
+            [
+                InlineKeyboardButton(text="💬 Ответить", callback_data="reply_to_post"),
+                InlineKeyboardButton(text="📩 Новое сообщение", url="https://t.me/PodslushanoNGHU_bot?start=new")
+            ]
+        ])
+
+        try:
+            sent_reply = await _send_media_with_caption(CHANNEL_ID, message, caption=reply_caption, parse_mode=ParseMode.HTML, reply_to_message_id=original_msg_id)
+            try:
+                await bot.edit_message_reply_markup(chat_id=CHANNEL_ID, message_id=sent_reply.message_id, reply_markup=answer_kb)
+            except Exception as e:
+                logging.error(f"Кнопка к ответу: {e}")
+
+            chat_id_str = str(CHANNEL_ID).replace("-100", "")
+            reply_link = f"https://t.me/c/{chat_id_str}/{sent_reply.message_id}"
+            
+            log_kb = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🔗 Перейти", url=reply_link)],
+                [InlineKeyboardButton(text="🗑 Удалить", callback_data=f"delete_msg_{sent_reply.message_id}")],
+                [InlineKeyboardButton(text="⚠️ Мут", callback_data=f"mute_menu_{user.id}")]
+            ])
+
+            log_text = (
+                f"💬 <b>Ответ</b>\n"
+                f"👤 <b>Автор:</b> {esc(user.full_name)}\n"
+                f"🔗 Username: @{esc(user.username) if user.username else 'нет'}\n"
+                f"🆔 ID: <code>{user.id}</code>\n"
+                f"🕒 Время: {now}\n"
+                f"📝 <b>Текст/Подпись:</b> {esc(text)}"
+            )
+            await bot.send_message(LOG_CHAT_ID, log_text, parse_mode=ParseMode.HTML, reply_markup=log_kb)
+
+            with open(LOG_FILE, "a", encoding="utf-8") as f:
+                f.write(f"[{now}] {user.full_name} ({user.username}, ID: {user.id}) - ОТВЕТ\n")
+                f.write(f"Текст: {text}\n" + "-" * 40 + "\n")
+
+            channel_kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="📢 Перейти в канал", url="https://t.me/+rgCZ7wpZaIE0YmZi")]])
+            await message.answer("✅ Твой анонимный ответ опубликован в канале!", reply_markup=channel_kb)
+        except Exception as e:
+            logging.error(f"Ошибка ответа: {e}")
+            await message.answer("❌ Не удалось отправить ответ. Возможно, пост удален.")
+        finally:
+            active_replies.pop(user.id, None)
+            mark_replies_dirty()
+        return
+
+    # --- ПУБЛИКАЦИЯ В КАНАЛ (ОБЫЧНОЕ СООБЩЕНИЕ) ---
+    signature = "\n\n📬 @PodslushanoNGHU_bot"
+    
+    reply_kb = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="💬 Ответить", callback_data="reply_to_post"),
+            InlineKeyboardButton(text="📩 Новое сообщение", url="https://t.me/PodslushanoNGHU_bot?start=new")
+        ]
+    ])
+
+    caption_out = (esc(text) + signature) if text else ""
+
+    try:
+        sent_msg = await _send_media_with_caption(CHANNEL_ID, message, caption=caption_out, parse_mode=ParseMode.HTML)
+        try:
+            await bot.edit_message_reply_markup(chat_id=CHANNEL_ID, message_id=sent_msg.message_id, reply_markup=reply_kb)
+        except Exception as e:
+            logging.error(f"Кнопка к посту: {e}")
+    except Exception as e:
+        logging.error(f"Ошибка канала: {e}")
+        await message.answer("❌ Ошибка отправки в канал.")
+        return
+
+    # Логирование в админ-чат
+    chat_id_str = str(CHANNEL_ID).replace("-100", "")
+    msg_link = f"https://t.me/c/{chat_id_str}/{sent_msg.message_id}"
+    log_kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔗 Перейти к сообщению", url=msg_link)],
+        [InlineKeyboardButton(text="🗑 Удалить", callback_data=f"delete_msg_{sent_msg.message_id}")],
+        [InlineKeyboardButton(text="⚠️ Мут", callback_data=f"mute_menu_{user.id}")]
+    ])
+
+    username = f"@{user.username}" if user.username else "нет username"
+    log_text = (
+        f"👤 <b>Автор:</b> {esc(user.full_name)}\n"
+        f"🔗 Username: {esc(username)}\n"
+        f"🆔 ID: <code>{user.id}</code>\n"
+        f"🕒 Время: {now}\n"
+        f"💬 <b>Тип:</b> {message.content_type}\n"
+        f"📝 <b>Текст/Подпись:</b> {esc(text)}"
+    )
+    try:
+        await bot.send_message(LOG_CHAT_ID, log_text, parse_mode=ParseMode.HTML, reply_markup=log_kb)
+    except Exception as e:
+        logging.error(f"Лог чат: {e}")
+
+    with open(LOG_FILE, "a", encoding="utf-8") as f:
+        f.write(f"[{now}] {user.full_name} ({username}, ID: {user.id})\n")
+        f.write(f"Тип: {message.content_type}. Текст: {text}\n" + "-" * 40 + "\n")
+
+    channel_kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="📢 Перейти в канал", url="https://t.me/+rgCZ7wpZaIE0YmZi")]])
+    await message.answer("✅ Сообщение отправлено в канал анонимно.", reply_markup=channel_kb)
+
+# ==============================================================================
+# ================= ОБРАБОТЧИКИ КНОПОК МОДЕРАЦИИ ===============================
+# ==============================================================================
+
+@dp.callback_query(F.data.startswith("delete_msg_"))
+async def delete_message_handler(callback: CallbackQuery):
+    if callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("⛔ Нет доступа")
+        return
+    try:
+        msg_id = int(callback.data.split("_")[2])
+    except (IndexError, ValueError):
+        await callback.answer("❌ Некорректный ID", show_alert=True)
+        return
+    try:
+        await bot.delete_message(chat_id=CHANNEL_ID, message_id=msg_id)
+        try:
+            await callback.message.edit_reply_markup(reply_markup=None)
+        except Exception:
+            pass
+        await callback.answer("✅ Удалено!", show_alert=True)
+    except Exception as e:
+        await callback.answer(f"❌ Ошибка: {e}", show_alert=True)
+
+@dp.callback_query(F.data.startswith("mute_menu_"))
+async def mute_menu_handler(callback: CallbackQuery):
+    if callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("⛔ Нет доступа")
+        return
+    try:
+        target_user_id = int(callback.data.split("_")[2])
+    except (IndexError, ValueError):
+        await callback.answer("❌ Некорректный ID", show_alert=True)
+        return
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⚠️ 15 минут", callback_data=f"mute_set_{target_user_id}_15")],
+        [InlineKeyboardButton(text="⚠️ 30 минут", callback_data=f"mute_set_{target_user_id}_30")],
+        [InlineKeyboardButton(text="⚠️ 1 час", callback_data=f"mute_set_{target_user_id}_60")],
+        [InlineKeyboardButton(text="⚠️ 2 часа", callback_data=f"mute_set_{target_user_id}_120")],
+        [InlineKeyboardButton(text="⚠️ 5 часов", callback_data=f"mute_set_{target_user_id}_300")],
+        [InlineKeyboardButton(text="⚠️ 24 часа", callback_data=f"mute_set_{target_user_id}_1440")],
+        [InlineKeyboardButton(text="✅ Размутить", callback_data=f"unmute_{target_user_id}")]
+    ])
+    await callback.message.answer(f"Выбери время мута или размуть <code>{target_user_id}</code>:", reply_markup=kb, parse_mode=ParseMode.HTML)
+    await callback.answer()
+
+@dp.callback_query(F.data.startswith("mute_set_"))
+async def mute_set_handler(callback: CallbackQuery):
+    if callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("⛔ Нет доступа")
+        return
+    try:
+        parts = callback.data.split("_")
+        target_user_id = int(parts[2])
+        minutes = int(parts[3])
+    except (IndexError, ValueError):
+        await callback.answer("❌ Некорректные данные", show_alert=True)
+        return
+    mute_until = (datetime.now() + timedelta(minutes=minutes)).timestamp()
+    muted_users[target_user_id] = mute_until
+    save_muted()
+    await callback.message.edit_text(f"✅ Пользователь <code>{target_user_id}</code> замучен на {minutes} мин.", parse_mode=ParseMode.HTML)
+    await callback.answer("Мут выдан")
+
+@dp.callback_query(F.data.startswith("unmute_"))
+async def unmute_handler(callback: CallbackQuery):
+    if callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("⛔ Нет доступа")
+        return
+    try:
+        target_user_id = int(callback.data.split("_")[1])
+    except (IndexError, ValueError):
+        await callback.answer("❌ Некорректный ID", show_alert=True)
+        return
+    if target_user_id in muted_users:
+        del muted_users[target_user_id]
+        save_muted()
+        await callback.message.edit_text(f"✅ Пользователь <code>{target_user_id}</code> размучен.", parse_mode=ParseMode.HTML)
+    else:
+        await callback.message.edit_text("ℹ️ Пользователь не в муте.", parse_mode=ParseMode.HTML)
+    await callback.answer("Готово")
+
+# ==============================================================================
+# ================= ФОНОВЫЕ ЗАДАЧИ =============================================
+# ==============================================================================
+
+async def delayed_poster():
+    while True:
+        try:
+            now_ts = datetime.now().timestamp()
+            to_remove = []
+            for post in list(delayed_posts):
+                try:
+                    if post.get("time", float("inf")) <= now_ts:
+                        await send_delayed_post(post)
+                        to_remove.append(post)
+                except Exception as e:
+                    logging.error(f"Ошибка при отправке отложенного поста {post!r}: {e}")
+                    to_remove.append(post)
+
+            if to_remove:
+                for post in to_remove:
+                    try:
+                        delayed_posts.remove(post)
+                    except ValueError:
+                        pass
+                with open(DELAYED_FILE, "w", encoding="utf-8") as f:
+                    json.dump(delayed_posts, f)
+        except Exception as e:
+            logging.error(f"Критическая ошибка в delayed_poster: {e}")
+        await asyncio.sleep(30)
+
+async def cleanup_muted():
+    while True:
+        try:
+            now_ts = datetime.now().timestamp()
+            expired = [uid for uid, until in muted_users.items() if until < now_ts]
+            if expired:
+                for uid in expired:
+                    del muted_users[uid]
+                save_muted()
+                logging.info(f"Очищено {len(expired)} истекших мутов.")
+        except Exception as e:
+            logging.error(f"Ошибка в cleanup_muted: {e}")
+        await asyncio.sleep(3600)
+
+# ==============================================================================
+# ================= ЗАПУСК БОТА ================================================
+# ==============================================================================
+
+async def main():
+    load_users_cache()
+    load_replies()
+    load_muted()
+    load_delayed()
+
+    background_tasks = [
+        asyncio.create_task(auto_save_replies()),
+        asyncio.create_task(delayed_poster()),
+        asyncio.create_task(cleanup_muted()),
+    ]
+
+    print("Бот запущен. Ожидание сообщений...")
+    try:
+        await dp.start_polling(bot, skip_updates=True, allowed_updates=["message", "callback_query"])
+    finally:
+        for t in background_tasks:
+            t.cancel()
+
+if __name__ == "__main__":
+    try:
+        asyncio.run(main())
+    except (KeyboardInterrupt, SystemExit):
+        print("Бот остановлен.")
