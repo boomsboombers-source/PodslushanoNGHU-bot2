@@ -140,6 +140,15 @@ def get_id_by_username(username: str):
                     return None
     return None
 
+def get_username_by_id(user_id: int) -> str:
+    """Ищет @username по ID в файле usernames.txt."""
+    if not os.path.exists(USERNAMES_FILE): return "нет username"
+    with open(USERNAMES_FILE, "r", encoding="utf-8") as f:
+        for line in f:
+            if line.strip().endswith(f":{user_id}"):
+                return f"@{line.split(':')[0]}"
+    return "нет username"
+
 def load_replies():
     global active_replies
     if os.path.exists(REPLIES_FILE):
@@ -301,12 +310,11 @@ async def _send_media_with_caption(target_id: int, message: Message, caption: st
 @dp.message(F.text.lower().in_(["!admin", "!админ"]))
 async def admin_panel(message: Message):
     if message.from_user.id not in ADMIN_IDS: return
+    
+    # Только реальные действия (без подсказок)
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📊 Статистика", callback_data="admin_stats")],
-        [InlineKeyboardButton(text="📢 Рассылка", callback_data="admin_broadcast_info")],
-        [InlineKeyboardButton(text="📅 Обновить расписание", callback_data="admin_schedule_info")],
         [InlineKeyboardButton(text="🧹 Очистить ответы", callback_data="admin_clear_replies")],
-        [InlineKeyboardButton(text="⏰ Отложенный пост", callback_data="admin_delayed_info")],
         [InlineKeyboardButton(text="📚 Команды", callback_data="admin_settings")]
     ])
     await message.answer("🛠 <b>Админ-панель</b>\nВыбери действие:", reply_markup=kb, parse_mode=ParseMode.HTML)
@@ -315,28 +323,70 @@ async def admin_panel(message: Message):
 async def admin_menu_handler(callback: CallbackQuery):
     if callback.from_user.id not in ADMIN_IDS: return
     action = callback.data.replace("admin_", "")
+    
     if action == "stats":
-        await callback.message.answer(f"📊 Пользователей: {len(cached_users)}\n💬 В ожидании: {len(active_replies)}\n🔇 В муте: {len(muted_users)}")
-    elif action == "broadcast_info":
-        await callback.message.answer("📢 Отправь: <code>!рассылка текст</code>", parse_mode=ParseMode.HTML)
-    elif action == "schedule_info":
-        await callback.message.answer("📅 Пришли фото с подписью <code>!расписание</code>", parse_mode=ParseMode.HTML)
+        # Формируем список замученных с юзернеймами
+        muted_list = ""
+        if muted_users:
+            muted_list = "\n\n🔇 <b>Замученные:</b>\n"
+            for uid, until_ts in muted_users.items():
+                username = get_username_by_id(uid)
+                remaining = int(until_ts - datetime.now().timestamp())
+                if remaining > 0:
+                    minutes = remaining // 60
+                    muted_list += f"• {username} (<code>{uid}</code>) — {minutes} мин.\n"
+                else:
+                    muted_list += f"• {username} (<code>{uid}</code>) — истек\n"
+        else:
+            muted_list = "\n\n🔇 <b>Замученных нет.</b>"
+
+        await callback.message.answer(
+            f"📊 <b>Статистика:</b>\n"
+            f"👥 Пользователей: <b>{len(cached_users)}</b>\n"
+            f"💬 В ожидании: <b>{len(active_replies)}</b>"
+            f"{muted_list}",
+            parse_mode=ParseMode.HTML
+        )
+        
     elif action == "clear_replies":
         active_replies.clear()
         mark_replies_dirty()
-        await callback.message.answer("✅ Очищено.")
-    elif action == "delayed_info":
-        await callback.message.answer("⏰ Отправь: <code>!отложка 18:00 Текст</code>", parse_mode=ParseMode.HTML)
+        await callback.message.answer("✅ Все ожидания ответов очищены.")
+        
     elif action == "settings":
         await callback.message.answer(
-            "📚 <b>Команды:</b>\n"
-            "• <code>!отложка [ЧЧ:ММ] [текст]</code>\n"
-            "• <code>!кнопка [ID]</code>\n"
-            "• <code>!лс [ID|@username] [текст]</code>\n"
-            "• <code>!рассылка [текст]</code>\n"
-            "• <code>!расписание</code> (в подписи к фото)\n"
-            "• <code>!статистика</code>\n"
-            "• <code>!очистить_ответы</code>",
+            "📚 <b>Полная шпаргалка по командам</b>\n\n"
+            
+            "📅 <b>Расписание</b>\n"
+            "• <code>!расписание</code> — <i>прикрепи фото расписания, в подписи напиши эту команду.</i>\n\n"
+            
+            "📢 <b>Рассылка (всем пользователям)</b>\n"
+            "• <code>!рассылка [текст]</code> — разошлет текст всем, кто запускал бота.\n"
+            "• <code>!рассылка</code> + фото/видео — разошлет медиа с подписью.\n"
+            "<i>Пример:</i> <code>!рассылка Привет! Завтра репетиция в 15:00.</code>\n\n"
+            
+            "✉️ <b>Личное сообщение</b>\n"
+            "• <code>!лс [ID|@username] [текст]</code> — отправит сообщение конкретному человеку.\n"
+            "<i>Пример:</i> <code>!лс @rudenkov Привет!</code>\n\n"
+            
+            "⏰ <b>Отложенный пост</b>\n"
+            "• <code>!отложка [ЧЧ:ММ] [текст]</code> — опубликует текст в канал в указанное время (по Москве).\n"
+            "• Можно прикрепить фото/видео к команде.\n"
+            "<i>Пример:</i> <code>!отложка 18:00 Смотрите новый пост!</code>\n\n"
+            
+            "🔘 <b>Кнопка к старому посту</b>\n"
+            "• <code>!кнопка [ID_сообщения]</code> — добавит кнопки «Ответить» и «Новое сообщение» к уже опубликованному посту.\n"
+            "<i>Пример:</i> <code>!кнопка 42</code>\n\n"
+            
+            "📊 <b>Статистика и очистка</b>\n"
+            "• <code>!статистика</code> — покажет пользователей, ожидания и список замученных.\n"
+            "• <code>!очистить_ответы</code> — сбросит все зависшие ожидания ответов.\n\n"
+            
+            "🛡 <b>Модерация (кнопки в лог-группе)</b>\n"
+            "Под каждым логом есть кнопки:\n"
+            "• <b>🗑 Удалить</b> — удаляет пост из канала.\n"
+            "• <b>⚠️ Мут</b> — открывает меню выбора времени (от 15 мин до 24 ч).\n"
+            "• <b>✅ Размутить</b> — снимает мут.",
             parse_mode=ParseMode.HTML
         )
     await callback.answer()
@@ -456,7 +506,7 @@ async def handle_all_messages(message: Message):
     # --- АДМИНСКИЕ КОМАНДЫ ---
     if user.id in ADMIN_IDS:
         
-        # 0. Обновление расписания (САМОЕ ПЕРВОЕ, чтобы защита не мешала)
+        # 0. Обновление расписания
         if text.lower().startswith("!расписание"):
             if not message.photo:
                 await message.answer("❌ Пришлите команду вместе с картинкой расписания.")
@@ -592,7 +642,6 @@ async def handle_all_messages(message: Message):
 
         reply_caption = f"{esc(text)}\n\n📬 @PodslushanoNGHU_bot" if text else "📬 @PodslushanoNGHU_bot"
         
-        # Кнопки для ответа (две в ряд)
         answer_kb = InlineKeyboardMarkup(inline_keyboard=[
             [
                 InlineKeyboardButton(text="💬 Ответить", callback_data="reply_to_post"),
@@ -627,224 +676,4 @@ async def handle_all_messages(message: Message):
             await bot.send_message(LOG_CHAT_ID, log_text, parse_mode=ParseMode.HTML, reply_markup=log_kb)
 
             with open(LOG_FILE, "a", encoding="utf-8") as f:
-                f.write(f"[{now}] {user.full_name} ({user.username}, ID: {user.id}) - ОТВЕТ\n")
-                f.write(f"Текст: {text}\n" + "-" * 40 + "\n")
-
-            channel_kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="📢 Перейти в канал", url="https://t.me/+rgCZ7wpZaIE0YmZi")]])
-            await message.answer("✅ Твой анонимный ответ опубликован в канале!", reply_markup=channel_kb)
-        except Exception as e:
-            logging.error(f"Ошибка ответа: {e}")
-            await message.answer("❌ Не удалось отправить ответ. Возможно, пост удален.")
-        finally:
-            active_replies.pop(user.id, None)
-            mark_replies_dirty()
-        return
-
-    # --- ПУБЛИКАЦИЯ В КАНАЛ (ОБЫЧНОЕ СООБЩЕНИЕ) ---
-    signature = "\n\n📬 @PodslushanoNGHU_bot"
-    
-    # Кнопки для обычного поста (две в ряд)
-    reply_kb = InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(text="💬 Ответить", callback_data="reply_to_post"),
-            InlineKeyboardButton(text="📩 Новое сообщение", url="https://t.me/PodslushanoNGHU_bot?start=new")
-        ]
-    ])
-
-    caption_out = (esc(text) + signature) if text else ""
-
-    try:
-        sent_msg = await _send_media_with_caption(CHANNEL_ID, message, caption=caption_out, parse_mode=ParseMode.HTML)
-        try:
-            await bot.edit_message_reply_markup(chat_id=CHANNEL_ID, message_id=sent_msg.message_id, reply_markup=reply_kb)
-        except Exception as e:
-            logging.error(f"Кнопка к посту: {e}")
-    except Exception as e:
-        logging.error(f"Ошибка канала: {e}")
-        await message.answer("❌ Ошибка отправки в канал.")
-        return
-
-    # Логирование в админ-чат
-    chat_id_str = str(CHANNEL_ID).replace("-100", "")
-    msg_link = f"https://t.me/c/{chat_id_str}/{sent_msg.message_id}"
-    log_kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🔗 Перейти к сообщению", url=msg_link)],
-        [InlineKeyboardButton(text="🗑 Удалить", callback_data=f"delete_msg_{sent_msg.message_id}")],
-        [InlineKeyboardButton(text="⚠️ Мут", callback_data=f"mute_menu_{user.id}")]
-    ])
-
-    username = f"@{user.username}" if user.username else "нет username"
-    log_text = (
-        f"👤 <b>Автор:</b> {esc(user.full_name)}\n"
-        f"🔗 Username: {esc(username)}\n"
-        f"🆔 ID: <code>{user.id}</code>\n"
-        f"🕒 Время: {now}\n"
-        f"💬 <b>Тип:</b> {message.content_type}\n"
-        f"📝 <b>Текст/Подпись:</b> {esc(text)}"
-    )
-    try:
-        await bot.send_message(LOG_CHAT_ID, log_text, parse_mode=ParseMode.HTML, reply_markup=log_kb)
-    except Exception as e:
-        logging.error(f"Лог чат: {e}")
-
-    with open(LOG_FILE, "a", encoding="utf-8") as f:
-        f.write(f"[{now}] {user.full_name} ({username}, ID: {user.id})\n")
-        f.write(f"Тип: {message.content_type}. Текст: {text}\n" + "-" * 40 + "\n")
-
-    channel_kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="📢 Перейти в канал", url="https://t.me/+rgCZ7wpZaIE0YmZi")]])
-    await message.answer("✅ Сообщение отправлено в канал анонимно.", reply_markup=channel_kb)
-
-# ==============================================================================
-# ================= ОБРАБОТЧИКИ КНОПОК МОДЕРАЦИИ ===============================
-# ==============================================================================
-
-@dp.callback_query(F.data.startswith("delete_msg_"))
-async def delete_message_handler(callback: CallbackQuery):
-    if callback.from_user.id not in ADMIN_IDS:
-        await callback.answer("⛔ Нет доступа")
-        return
-    try:
-        msg_id = int(callback.data.split("_")[2])
-    except (IndexError, ValueError):
-        await callback.answer("❌ Некорректный ID", show_alert=True)
-        return
-    try:
-        await bot.delete_message(chat_id=CHANNEL_ID, message_id=msg_id)
-        try:
-            await callback.message.edit_reply_markup(reply_markup=None)
-        except Exception:
-            pass
-        await callback.answer("✅ Удалено!", show_alert=True)
-    except Exception as e:
-        await callback.answer(f"❌ Ошибка: {e}", show_alert=True)
-
-@dp.callback_query(F.data.startswith("mute_menu_"))
-async def mute_menu_handler(callback: CallbackQuery):
-    if callback.from_user.id not in ADMIN_IDS:
-        await callback.answer("⛔ Нет доступа")
-        return
-    try:
-        target_user_id = int(callback.data.split("_")[2])
-    except (IndexError, ValueError):
-        await callback.answer("❌ Некорректный ID", show_alert=True)
-        return
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="⚠️ 15 минут", callback_data=f"mute_set_{target_user_id}_15")],
-        [InlineKeyboardButton(text="⚠️ 30 минут", callback_data=f"mute_set_{target_user_id}_30")],
-        [InlineKeyboardButton(text="⚠️ 1 час", callback_data=f"mute_set_{target_user_id}_60")],
-        [InlineKeyboardButton(text="⚠️ 2 часа", callback_data=f"mute_set_{target_user_id}_120")],
-        [InlineKeyboardButton(text="⚠️ 5 часов", callback_data=f"mute_set_{target_user_id}_300")],
-        [InlineKeyboardButton(text="⚠️ 24 часа", callback_data=f"mute_set_{target_user_id}_1440")],
-        [InlineKeyboardButton(text="✅ Размутить", callback_data=f"unmute_{target_user_id}")]
-    ])
-    await callback.message.answer(f"Выбери время мута или размуть <code>{target_user_id}</code>:", reply_markup=kb, parse_mode=ParseMode.HTML)
-    await callback.answer()
-
-@dp.callback_query(F.data.startswith("mute_set_"))
-async def mute_set_handler(callback: CallbackQuery):
-    if callback.from_user.id not in ADMIN_IDS:
-        await callback.answer("⛔ Нет доступа")
-        return
-    try:
-        parts = callback.data.split("_")
-        target_user_id = int(parts[2])
-        minutes = int(parts[3])
-    except (IndexError, ValueError):
-        await callback.answer("❌ Некорректные данные", show_alert=True)
-        return
-    mute_until = (datetime.now() + timedelta(minutes=minutes)).timestamp()
-    muted_users[target_user_id] = mute_until
-    save_muted()
-    await callback.message.edit_text(f"✅ Пользователь <code>{target_user_id}</code> замучен на {minutes} мин.", parse_mode=ParseMode.HTML)
-    await callback.answer("Мут выдан")
-
-@dp.callback_query(F.data.startswith("unmute_"))
-async def unmute_handler(callback: CallbackQuery):
-    if callback.from_user.id not in ADMIN_IDS:
-        await callback.answer("⛔ Нет доступа")
-        return
-    try:
-        target_user_id = int(callback.data.split("_")[1])
-    except (IndexError, ValueError):
-        await callback.answer("❌ Некорректный ID", show_alert=True)
-        return
-    if target_user_id in muted_users:
-        del muted_users[target_user_id]
-        save_muted()
-        await callback.message.edit_text(f"✅ Пользователь <code>{target_user_id}</code> размучен.", parse_mode=ParseMode.HTML)
-    else:
-        await callback.message.edit_text("ℹ️ Пользователь не в муте.", parse_mode=ParseMode.HTML)
-    await callback.answer("Готово")
-
-# ==============================================================================
-# ================= ФОНОВЫЕ ЗАДАЧИ =============================================
-# ==============================================================================
-
-async def delayed_poster():
-    while True:
-        try:
-            now_ts = datetime.now().timestamp()
-            to_remove = []
-            for post in list(delayed_posts):
-                try:
-                    if post.get("time", float("inf")) <= now_ts:
-                        await send_delayed_post(post)
-                        to_remove.append(post)
-                except Exception as e:
-                    logging.error(f"Ошибка при отправке отложенного поста {post!r}: {e}")
-                    to_remove.append(post)
-
-            if to_remove:
-                for post in to_remove:
-                    try:
-                        delayed_posts.remove(post)
-                    except ValueError:
-                        pass
-                with open(DELAYED_FILE, "w", encoding="utf-8") as f:
-                    json.dump(delayed_posts, f)
-        except Exception as e:
-            logging.error(f"Критическая ошибка в delayed_poster: {e}")
-        await asyncio.sleep(30)
-
-async def cleanup_muted():
-    while True:
-        try:
-            now_ts = datetime.now().timestamp()
-            expired = [uid for uid, until in muted_users.items() if until < now_ts]
-            if expired:
-                for uid in expired:
-                    del muted_users[uid]
-                save_muted()
-                logging.info(f"Очищено {len(expired)} истекших мутов.")
-        except Exception as e:
-            logging.error(f"Ошибка в cleanup_muted: {e}")
-        await asyncio.sleep(3600)
-
-# ==============================================================================
-# ================= ЗАПУСК БОТА ================================================
-# ==============================================================================
-
-async def main():
-    load_users_cache()
-    load_replies()
-    load_muted()
-    load_delayed()
-
-    background_tasks = [
-        asyncio.create_task(auto_save_replies()),
-        asyncio.create_task(delayed_poster()),
-        asyncio.create_task(cleanup_muted()),
-    ]
-
-    print("Бот запущен. Ожидание сообщений...")
-    try:
-        await dp.start_polling(bot, skip_updates=True, allowed_updates=["message", "callback_query"])
-    finally:
-        for t in background_tasks:
-            t.cancel()
-
-if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except (KeyboardInterrupt, SystemExit):
-        print("Бот остановлен.")
+                f.write(f"[{now
