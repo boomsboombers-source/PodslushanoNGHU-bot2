@@ -532,7 +532,10 @@ async def handle_all_messages(message: Message):
         known_admin_commands = [
             "!отложка", "!кнопка", "!статистика", 
             "!очистить_ответы", "!рассылка", "!лс", 
-            "!админ", "!admin", "!расписание"
+            "!админ", "!admin", "!расписание",
+            "!начать_конкурс", "!start_contest", 
+            "!завершить_конкурс", "!end_contest", 
+            "!результаты_конкурса", "!contest_results"
         ]
         if not any(text.lower().startswith(cmd) for cmd in known_admin_commands):
             await message.answer("❓ Неизвестная команда. Введите !админ для списка доступных команд.")
@@ -544,7 +547,12 @@ async def handle_all_messages(message: Message):
         mark_replies_dirty()
 
     # Пропускаем служебные команды, чтобы они не улетели в канал
-    if text in ["📅 Расписание репетиций", "/schedule", "/admin", "!админ", "!admin"]:
+    if text in [
+        "📅 Расписание репетиций", "/schedule", "/admin", "!админ", "!admin",
+        "/начать_конкурс", "/start_contest", "!начать_конкурс", "!start_contest",
+        "/завершить_конкурс", "/end_contest", "!завершить_конкурс", "!end_contest",
+        "/результаты_конкурса", "/contest_results", "!результаты_конкурса", "!contest_results"
+    ]:
         return
 
     # --- АДМИНСКИЕ КОМАНДЫ ---
