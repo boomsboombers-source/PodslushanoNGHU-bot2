@@ -344,7 +344,23 @@ async def admin_menu_handler(callback: CallbackQuery):
     action = callback.data.replace("admin_", "")
     
     if action == "stats":
-        # Формируем список замученных с юзернеймами
+        # --- ПОДСЧЕТ СООБЩЕНИЙ В ЛОГ-ФАЙЛЕ ---
+        total_msgs = 0
+        today_msgs = 0
+        today_str = datetime.now().strftime("%d.%m.%Y")
+        
+        if os.path.exists(LOG_FILE):
+            try:
+                with open(LOG_FILE, "r", encoding="utf-8") as f:
+                    for line in f:
+                        if line.startswith("["):
+                            total_msgs += 1
+                            if line.startswith(f"[{today_str}"):
+                                today_msgs += 1
+            except Exception as e:
+                logging.error(f"Ошибка чтения лог-файла для статистики: {e}")
+
+        # --- СПИСОК ЗАМУЧЕННЫХ ---
         muted_list = ""
         if muted_users:
             muted_list = "\n\n🔇 <b>Замученные:</b>\n"
@@ -359,10 +375,13 @@ async def admin_menu_handler(callback: CallbackQuery):
         else:
             muted_list = "\n\n🔇 <b>Замученных нет.</b>"
 
+        # --- ОТПРАВКА ИТОГОВОГО СООБЩЕНИЯ ---
         await callback.message.answer(
             f"📊 <b>Статистика:</b>\n"
             f"👥 Пользователей: <b>{len(cached_users)}</b>\n"
-            f"💬 В ожидании: <b>{len(active_replies)}</b>"
+            f"💬 В ожидании: <b>{len(active_replies)}</b>\n"
+            f"📨 Сообщений всего: <b>{total_msgs}</b>\n"
+            f"📅 Сообщений сегодня: <b>{today_msgs}</b>"
             f"{muted_list}",
             parse_mode=ParseMode.HTML
         )
