@@ -14,32 +14,23 @@ from aiogram.enums import ParseMode, ContentType
 from aiogram.exceptions import TelegramBadRequest
 
 # ==============================================================================
-# ================= НАСТРОЙКИ БОТА (МЕНЯТЬ ТОЛЬКО ЗДЕСЬ) =======================
+# ================= НАСТРОЙКИ БОТА =============================================
 # ==============================================================================
 
-# Токен берется из переменных окружения (на Bothost он задается в панели управления)
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-
-# ID канала, куда бот публикует анонимки
 CHANNEL_ID = -1002304148771
-
-# ID группы, куда падают логи (кто, что и когда написал)
 LOG_CHAT_ID = -1004306176378
-
-# Список ID пользователей, у которых есть права админа (доступ к меню и командам)
 ADMIN_IDS = [1088467220, 1690346204]
 
-# Путь к приветственной картинке
 WELCOME_IMAGE = "pictures/Podslushano.png"
 
-# Пути к файлам для хранения данных (в папке data, чтобы не сбрасывались при деплое)
-LOG_FILE = "data/messages.txt"        # Текстовые логи
-USERS_FILE = "data/users.txt"         # База ID пользователей (для рассылки)
-SCHEDULE_FILE = "data/schedule.txt"   # ID картинки расписания
-USERNAMES_FILE = "data/usernames.txt" # Связки @username -> ID
-REPLIES_FILE = "data/replies.json"    # Активные ожидания ответов на посты
-MUTED_FILE = "data/muted.json"        # База замученных пользователей
-DELAYED_FILE = "data/delayed.json"    # База отложенных постов
+LOG_FILE = "data/messages.txt"
+USERS_FILE = "data/users.txt"
+SCHEDULE_FILE = "data/schedule.txt"
+USERNAMES_FILE = "data/usernames.txt"
+REPLIES_FILE = "data/replies.json"
+MUTED_FILE = "data/muted.json"
+DELAYED_FILE = "data/delayed.json"
 
 # ==============================================================================
 # ================= ИНИЦИАЛИЗАЦИЯ ==============================================
@@ -47,14 +38,12 @@ DELAYED_FILE = "data/delayed.json"    # База отложенных посто
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-# Создаем папку data ДО запуска бота, чтобы файлы могли сохраняться
 if not os.path.exists("data"):
     os.makedirs("data")
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
-# --- ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ (ХРАНИЛИЩА) ---
 active_replies = {}
 cached_users = set()
 muted_users = {}
@@ -69,7 +58,6 @@ usernames_file_lock = asyncio.Lock()
 # ==============================================================================
 
 def esc(s) -> str:
-    """Экранирует пользовательский текст для parse_mode=HTML (защита от сломанной разметки)."""
     return html.escape(s or "", quote=False)
 
 def load_users_cache():
@@ -100,7 +88,6 @@ def get_all_users() -> list[str]:
     return list(cached_users)
 
 def get_main_keyboard() -> ReplyKeyboardMarkup:
-    """Создает нижнюю клавиатуру с кнопкой расписания."""
     return ReplyKeyboardMarkup(
         keyboard=[[KeyboardButton(text="📅 Расписание репетиций")]],
         resize_keyboard=True, is_persistent=True,
@@ -141,7 +128,6 @@ def get_id_by_username(username: str):
     return None
 
 def get_username_by_id(user_id: int) -> str:
-    """Ищет @username по ID в файле usernames.txt."""
     if not os.path.exists(USERNAMES_FILE): return "нет username"
     with open(USERNAMES_FILE, "r", encoding="utf-8") as f:
         for line in f:
@@ -280,9 +266,9 @@ def load_delayed():
                 valid.append(post)
         delayed_posts = valid
     except Exception as e:
-        logging.error(f"Ошибка загрузки delayed.json: {e}")
-        os.replace(DELAYED_FILE, DELAYED_FILE + ".bak")
-        delayed_posts = []
+            logging.error(f"Ошибка загрузки delayed.json: {e}")
+            os.replace(DELAYED_FILE, DELAYED_FILE + ".bak")
+            delayed_posts = []
 
 async def _send_media_with_caption(target_id: int, message: Message, caption: str = "", parse_mode=None, reply_to_message_id: int = None) -> Message:
     if message.photo: return await bot.send_photo(target_id, photo=message.photo[-1].file_id, caption=caption, parse_mode=parse_mode, reply_to_message_id=reply_to_message_id)
@@ -303,15 +289,13 @@ async def _send_media_with_caption(target_id: int, message: Message, caption: st
     else: return await bot.send_message(target_id, caption, parse_mode=parse_mode, reply_to_message_id=reply_to_message_id)
 
 # ==============================================================================
-# ================= АДМИН-ПАНЕЛЬ (ИНЛАЙН МЕНЮ) =================================
+# ================= АДМИН-ПАНЕЛЬ ===============================================
 # ==============================================================================
 
 @dp.message(Command("admin", "админ"))
 @dp.message(F.text.lower().in_(["!admin", "!админ"]))
 async def admin_panel(message: Message):
     if message.from_user.id not in ADMIN_IDS: return
-    
-    # Только реальные действия (без подсказок)
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📊 Статистика", callback_data="admin_stats")],
         [InlineKeyboardButton(text="🧹 Очистить ответы", callback_data="admin_clear_replies")],
@@ -325,7 +309,6 @@ async def admin_menu_handler(callback: CallbackQuery):
     action = callback.data.replace("admin_", "")
     
     if action == "stats":
-        # Формируем список замученных с юзернеймами
         muted_list = ""
         if muted_users:
             muted_list = "\n\n🔇 <b>Замученные:</b>\n"
@@ -356,32 +339,25 @@ async def admin_menu_handler(callback: CallbackQuery):
     elif action == "settings":
         await callback.message.answer(
             "📚 <b>Полная шпаргалка по командам</b>\n\n"
-            
             "📅 <b>Расписание</b>\n"
             "• <code>!расписание</code> — <i>прикрепи фото расписания, в подписи напиши эту команду.</i>\n\n"
-            
             "📢 <b>Рассылка (всем пользователям)</b>\n"
             "• <code>!рассылка [текст]</code> — разошлет текст всем, кто запускал бота.\n"
             "• <code>!рассылка</code> + фото/видео — разошлет медиа с подписью.\n"
             "<i>Пример:</i> <code>!рассылка Привет! Завтра репетиция в 15:00.</code>\n\n"
-            
             "✉️ <b>Личное сообщение</b>\n"
             "• <code>!лс [ID|@username] [текст]</code> — отправит сообщение конкретному человеку.\n"
             "<i>Пример:</i> <code>!лс @rudenkov Привет!</code>\n\n"
-            
             "⏰ <b>Отложенный пост</b>\n"
             "• <code>!отложка [ЧЧ:ММ] [текст]</code> — опубликует текст в канал в указанное время (по Москве).\n"
             "• Можно прикрепить фото/видео к команде.\n"
             "<i>Пример:</i> <code>!отложка 18:00 Смотрите новый пост!</code>\n\n"
-            
             "🔘 <b>Кнопка к старому посту</b>\n"
             "• <code>!кнопка [ID_сообщения]</code> — добавит кнопки «Ответить» и «Новое сообщение» к уже опубликованному посту.\n"
             "<i>Пример:</i> <code>!кнопка 42</code>\n\n"
-            
             "📊 <b>Статистика и очистка</b>\n"
             "• <code>!статистика</code> — покажет пользователей, ожидания и список замученных.\n"
             "• <code>!очистить_ответы</code> — сбросит все зависшие ожидания ответов.\n\n"
-            
             "🛡 <b>Модерация (кнопки в лог-группе)</b>\n"
             "Под каждым логом есть кнопки:\n"
             "• <b>🗑 Удалить</b> — удаляет пост из канала.\n"
@@ -463,217 +439,4 @@ async def show_schedule(message: Message):
 
 @dp.message(F.content_type.in_([
     ContentType.TEXT, ContentType.PHOTO, ContentType.VIDEO, ContentType.AUDIO,
-    ContentType.DOCUMENT, ContentType.VOICE, ContentType.VIDEO_NOTE, ContentType.STICKER,
-    ContentType.CONTACT, ContentType.LOCATION
-]))
-async def handle_all_messages(message: Message):
-    if message.chat.type != "private": return
-
-    user = message.from_user
-    text = message.text or message.caption or ""
-    now = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
-
-    await save_user(user.id)
-    await save_username(user.username, user.id)
-
-    # --- ПРОВЕРКА НА МУТ ---
-    mute_remaining = check_mute(user.id)
-    if mute_remaining is not None:
-        minutes = mute_remaining // 60
-        await message.answer(f"⛔ Вы временно не можете отправлять сообщения. Осталось: <b>{minutes} мин.</b>", parse_mode=ParseMode.HTML)
-        return
-
-    # --- ГЛОБАЛЬНАЯ ЗАЩИТА ОТ СЛУЧАЙНОЙ ПУБЛИКАЦИИ КОМАНД ---
-    if user.id in ADMIN_IDS and text.startswith("!"):
-        known_admin_commands = [
-            "!отложка", "!кнопка", "!статистика", 
-            "!очистить_ответы", "!рассылка", "!лс", 
-            "!админ", "!admin", "!расписание"
-        ]
-        if not any(text.lower().startswith(cmd) for cmd in known_admin_commands):
-            await message.answer("❓ Неизвестная команда. Введите !админ для списка доступных команд.")
-            return
-
-    # Сброс режима ответа при вводе команды
-    if user.id in active_replies and (text in ["📅 Расписание репетиций", "/schedule"] or text.lower().startswith("!")):
-        del active_replies[user.id]
-        mark_replies_dirty()
-
-    # Пропускаем служебные команды, чтобы они не улетели в канал
-    if text in ["📅 Расписание репетиций", "/schedule", "/admin", "!админ", "!admin"]:
-        return
-
-    # --- АДМИНСКИЕ КОМАНДЫ ---
-    if user.id in ADMIN_IDS:
-        
-        # 0. Обновление расписания
-        if text.lower().startswith("!расписание"):
-            if not message.photo:
-                await message.answer("❌ Пришлите команду вместе с картинкой расписания.")
-                return
-            try:
-                with open(SCHEDULE_FILE, "w", encoding="utf-8") as f:
-                    f.write(message.photo[-1].file_id)
-                await message.answer("✅ Расписание успешно обновлено!")
-            except Exception as e:
-                await message.answer(f"❌ Ошибка сохранения: {e}")
-            return
-
-        # 1. Отложенный пост
-        if text.lower().startswith("!отложка"):
-            source = message.text or message.caption or ""
-            parts = source.split(maxsplit=2)
-            if len(parts) < 3:
-                await message.answer("❌ Формат: !отложка ЧЧ:ММ Текст")
-                return
-            try:
-                h, m = map(int, parts[1].split(":"))
-                now_dt = datetime.now()
-                target_dt = now_dt.replace(hour=h, minute=m, second=0, microsecond=0)
-                if target_dt < now_dt:
-                    target_dt += timedelta(days=1)
-
-                post_data = serialize_message(message)
-                post_data["text"] = parts[2].strip()
-
-                if post_data["type"] in ("video_note", "sticker") and post_data["text"]:
-                    await message.answer("⚠️ У кружочков и стикеров нет подписи — текст не будет опубликован.")
-
-                post_data["time"] = target_dt.timestamp()
-                delayed_posts.append(post_data)
-                with open(DELAYED_FILE, "w", encoding="utf-8") as f:
-                    json.dump(delayed_posts, f)
-
-                await message.answer(f"⏰ Пост будет опубликован в {target_dt.strftime('%H:%M')}.")
-            except Exception as e:
-                await message.answer(f"❌ Ошибка: {e}")
-            return
-
-        # 2. Кнопка к старому посту
-        if text.lower().startswith("!кнопка"):
-            parts = text.split()
-            if len(parts) < 2:
-                await message.answer("❌ Формат: !кнопка ID")
-                return
-            try:
-                msg_id = int(parts[1])
-                reply_kb = InlineKeyboardMarkup(inline_keyboard=[
-                    [
-                        InlineKeyboardButton(text="💬 Ответить", callback_data="reply_to_post"),
-                        InlineKeyboardButton(text="📩 Новое сообщение", url="https://t.me/PodslushanoNGHU_bot?start=new")
-                    ]
-                ])
-                await bot.edit_message_reply_markup(chat_id=CHANNEL_ID, message_id=msg_id, reply_markup=reply_kb)
-                await message.answer(f"✅ Кнопки добавлены к {msg_id}.")
-            except TelegramBadRequest as e:
-                if "message can't be edited" in str(e):
-                    await message.answer("❌ Нельзя редактировать: сообщение принадлежит не боту или слишком старое.")
-                else:
-                    await message.answer(f"❌ Ошибка: {e}")
-            return
-
-        # 3. Статистика
-        if text.lower().startswith("!статистика"):
-            await message.answer(f"📊 Пользователей: {len(cached_users)}\n💬 В ожидании: {len(active_replies)}\n🔇 В муте: {len(muted_users)}")
-            return
-
-        # 4. Очистка ответов
-        if text.lower().startswith("!очистить_ответы"):
-            active_replies.clear()
-            mark_replies_dirty()
-            await message.answer("✅ Очищено.")
-            return
-
-        # 5. Рассылка
-        if text.lower().startswith("!рассылка"):
-            clean_text = text.partition("!рассылка")[2].strip()
-            if not clean_text and not message.photo and not message.video:
-                await message.answer("❌ Текст пуст.")
-                return
-            users = get_all_users()
-            await message.answer(f"🚀 Рассылка для {len(users)}...")
-            success = 0
-            for uid_str in users:
-                try:
-                    await _send_media_with_caption(int(uid_str), message, caption=clean_text, parse_mode=ParseMode.HTML)
-                    success += 1
-                    await asyncio.sleep(0.1)
-                except Exception as e:
-                    logging.warning(f"Не отправлено {uid_str}: {e}")
-            await message.answer(f"✅ Отправлено: {success} из {len(users)}.")
-            return
-
-        # 6. Личное сообщение
-        if text.lower().startswith("!лс"):
-            parts = text.split(maxsplit=2)
-            if len(parts) < 2:
-                await message.answer("❌ Формат: !лс ID|@username Текст")
-                return
-            target = parts[1]
-            if len(parts) < 3 or not parts[2].strip():
-                if not message.photo and not message.video:
-                    await message.answer("❌ Текст сообщения пуст.")
-                    return
-
-            try:
-                if target.startswith("@") or not target.isdigit():
-                    target_id = get_id_by_username(target.lstrip('@'))
-                    if not target_id:
-                        chat = await bot.get_chat(target)
-                        target_id = chat.id
-                        await save_username(target, target_id)
-                else:
-                    target_id = int(target)
-            except Exception:
-                await message.answer("❌ Пользователь не найден.")
-                return
-            dm_text = parts[2] if len(parts) > 2 else ""
-            try:
-                await _send_media_with_caption(target_id, message, caption=dm_text, parse_mode=ParseMode.HTML)
-                await message.answer("✅ Отправлено.")
-            except Exception:
-                await message.answer("❌ Ошибка отправки.")
-            return
-
-    # --- ЛОГИКА ОТВЕТА НА СООБЩЕНИЕ ---
-    if user.id in active_replies:
-        original_msg_id = active_replies.pop(user.id)
-        mark_replies_dirty()
-
-        reply_caption = f"{esc(text)}\n\n📬 @PodslushanoNGHU_bot" if text else "📬 @PodslushanoNGHU_bot"
-        
-        answer_kb = InlineKeyboardMarkup(inline_keyboard=[
-            [
-                InlineKeyboardButton(text="💬 Ответить", callback_data="reply_to_post"),
-                InlineKeyboardButton(text="📩 Новое сообщение", url="https://t.me/PodslushanoNGHU_bot?start=new")
-            ]
-        ])
-
-        try:
-            sent_reply = await _send_media_with_caption(CHANNEL_ID, message, caption=reply_caption, parse_mode=ParseMode.HTML, reply_to_message_id=original_msg_id)
-            try:
-                await bot.edit_message_reply_markup(chat_id=CHANNEL_ID, message_id=sent_reply.message_id, reply_markup=answer_kb)
-            except Exception as e:
-                logging.error(f"Кнопка к ответу: {e}")
-
-            chat_id_str = str(CHANNEL_ID).replace("-100", "")
-            reply_link = f"https://t.me/c/{chat_id_str}/{sent_reply.message_id}"
-            
-            log_kb = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="🔗 Перейти", url=reply_link)],
-                [InlineKeyboardButton(text="🗑 Удалить", callback_data=f"delete_msg_{sent_reply.message_id}")],
-                [InlineKeyboardButton(text="⚠️ Мут", callback_data=f"mute_menu_{user.id}")]
-            ])
-
-            log_text = (
-                f"💬 <b>Ответ</b>\n"
-                f"👤 <b>Автор:</b> {esc(user.full_name)}\n"
-                f"🔗 Username: @{esc(user.username) if user.username else 'нет'}\n"
-                f"🆔 ID: <code>{user.id}</code>\n"
-                f"🕒 Время: {now}\n"
-                f"📝 <b>Текст/Подпись:</b> {esc(text)}"
-            )
-            await bot.send_message(LOG_CHAT_ID, log_text, parse_mode=ParseMode.HTML, reply_markup=log_kb)
-
-            with open(LOG_FILE, "a", encoding="utf-8") as f:
-                f.write(f"[{now
+    ContentType.DOCUMENT, ContentType.VOICE, ContentType.VIDEO
