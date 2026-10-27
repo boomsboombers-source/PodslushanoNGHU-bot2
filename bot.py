@@ -13,6 +13,9 @@ from aiogram.filters import CommandStart, Command
 from aiogram.enums import ParseMode, ContentType
 from aiogram.exceptions import TelegramBadRequest
 
+# Модуль конкурса (подключается отдельно)
+from contest import contest_router, setup_contest
+
 # ==============================================================================
 # ================= НАСТРОЙКИ БОТА (МЕНЯТЬ ТОЛЬКО ЗДЕСЬ) =======================
 # ==============================================================================
@@ -53,6 +56,11 @@ if not os.path.exists("data"):
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
+
+# --- ПОДКЛЮЧАЕМ МОДУЛЬ КОНКУРСА ---
+setup_contest(bot)
+dp.include_router(contest_router)
+# ---------------------------------
 
 # --- ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ (ХРАНИЛИЩА) ---
 active_replies = {}    # {user_id: message_id_в_канале}
@@ -99,8 +107,8 @@ async def save_user(user_id: int):
             cached_users.discard(user_id_str)
 
 def get_all_users() -> list[str]:
-    """Возвращает кэшированный список ID (мгновенно, без чтения файла)."""
-    return list(cached_users)
+    """Возвращает кэшированный список ID (мгновенно, с защитой от изменения во время итерации)."""
+    return list(cached_users.copy()) # Защита от RuntimeError: Set changed size during iteration
 
 def get_main_keyboard() -> ReplyKeyboardMarkup:
     """Создает нижнюю клавиатуру с кнопкой расписания."""
@@ -926,7 +934,7 @@ async def unmute_handler(callback: CallbackQuery):
 # ==============================================================================
 
 async def delayed_poster():
-    """Отправляет отложенные посты. Ошибки не убивают цикл."""
+    """Отправляет отложенные посты. Ошибки не убивают цикл, а логируются."""
     while True:
         try:
             now_ts = datetime.now().timestamp()
@@ -938,6 +946,18 @@ async def delayed_poster():
                         to_remove.append(post)
                 except Exception as e:
                     logging.error(f"Ошибка при отправке отложенного поста {post!r}: {e}")
+                    # Уведомляем админа в лог-группу
+                    try:
+                        await bot.send_message(
+                            LOG_CHAT_ID,
+                            f"⚠️ <b>Ошибка отложенного поста!</b>\n"
+                            f"Тип: {post.get('type')}\n"
+                            f"Ошибка: {e}\n"
+                            f"Пост удален из очереди.",
+                            parse_mode=ParseMode.HTML
+                        )
+                    except Exception:
+                        pass
                     to_remove.append(post)
 
             if to_remove:
@@ -977,18 +997,28 @@ async def main():
     load_muted()
     load_delayed()
 
-    background_tasks = [
-        asyncio.create_task(auto_save_replies()),
-        asyncio.create_task(delayed_poster()),
-        asyncio.create_task(cleanup_muted()),
-    ]
-
     print("Бот запущен. Ожидание сообщений...")
-    try:
-        await dp.start_polling(bot, skip_updates=True, allowed_updates=["message", "callback_query"])
-    finally:
-        for t in background_tasks:
-            t.cancel()
+    
+    # Цикл переподключения
+    while True:
+        # Создаем фоновые задачи заново при каждой попытке
+        background_tasks = [
+            asyncio.create_task(auto_save_replies()),
+            asyncio.create_task(delayed_poster()),
+            asyncio.create_task(cleanup_muted()),
+        ]
+        
+        try:
+            await dp.start_polling(bot, skip_updates=True, allowed_updates=["message", "callback_query"])
+        except Exception as e:
+            logging.error(f"Ошибка поллинга (переподключение через 5 сек): {e}")
+            await asyncio.sleep(5)
+        finally:
+            # Отменяем задачи перед следующей попыткой, чтобы не дублировать
+            for t in background_tasks:
+                t.cancel()
+            # Даем время на отмену
+            await asyncio.gather(*background_tasks, return_exceptions=True)
 
 if __name__ == "__main__":
     try:
