@@ -748,7 +748,13 @@ async def handle_all_messages(message: Message):
                 f.write(f"[{now}] {user.full_name} ({user.username}, ID: {user.id}) - ОТВЕТ\n")
                 f.write(f"Текст: {text}\n" + "-" * 40 + "\n")
 
-            channel_kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="📢 Перейти в канал", url="https://t.me/+rgCZ7wpZaIE0YmZi")]])
+            # Формируем ссылку на конкретный ответ в канале
+            chat_id_str = str(CHANNEL_ID).replace("-100", "") 
+            reply_link = f"https://t.me/c/{chat_id_str}/{sent_reply.message_id}"
+
+            channel_kb = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="📢 Перейти к сообщению", url=reply_link)]
+            ])
             await message.answer("✅ Твой анонимный ответ опубликован в канале!", reply_markup=channel_kb)
         except Exception as e:
             logging.error(f"Ошибка ответа: {e}")
@@ -818,7 +824,13 @@ async def handle_all_messages(message: Message):
         f.write(f"[{now}] {user.full_name} ({username}, ID: {user.id})\n")
         f.write(f"Тип: {message.content_type}. Текст: {text}\n" + "-" * 40 + "\n")
 
-    channel_kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="📢 Перейти в канал", url="https://t.me/+rgCZ7wpZaIE0YmZi")]])
+    # Формируем ссылку на конкретный пост в канале
+    chat_id_str = str(CHANNEL_ID).replace("-100", "")
+    msg_link = f"https://t.me/c/{chat_id_str}/{sent_msg.message_id}"
+
+    channel_kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📢 Перейти к сообщению", url=msg_link)]
+    ])
     await message.answer("✅ Сообщение отправлено в канал анонимно.", reply_markup=channel_kb)
 
 # ==============================================================================
