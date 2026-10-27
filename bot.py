@@ -14,23 +14,32 @@ from aiogram.enums import ParseMode, ContentType
 from aiogram.exceptions import TelegramBadRequest
 
 # ==============================================================================
-# ================= НАСТРОЙКИ БОТА =============================================
+# ================= НАСТРОЙКИ БОТА (МЕНЯТЬ ТОЛЬКО ЗДЕСЬ) =======================
 # ==============================================================================
 
+# Токен берется из переменных окружения (на Bothost он задается в панели управления)
 BOT_TOKEN = os.getenv("BOT_TOKEN")
+
+# ID канала, куда бот публикует анонимки
 CHANNEL_ID = -1002304148771
+
+# ID группы, куда падают логи (кто, что и когда написал)
 LOG_CHAT_ID = -1004306176378
+
+# Список ID пользователей, у которых есть права админа
 ADMIN_IDS = [1088467220, 1690346204]
 
+# Путь к приветственной картинке
 WELCOME_IMAGE = "pictures/Podslushano.png"
 
-LOG_FILE = "data/messages.txt"
-USERS_FILE = "data/users.txt"
-SCHEDULE_FILE = "data/schedule.txt"
-USERNAMES_FILE = "data/usernames.txt"
-REPLIES_FILE = "data/replies.json"
-MUTED_FILE = "data/muted.json"
-DELAYED_FILE = "data/delayed.json"
+# Пути к файлам для хранения данных (в папке data, чтобы не сбрасывались при деплое)
+LOG_FILE = "data/messages.txt"        # Текстовые логи
+USERS_FILE = "data/users.txt"         # База ID пользователей (для рассылки)
+SCHEDULE_FILE = "data/schedule.txt"   # ID картинки расписания
+USERNAMES_FILE = "data/usernames.txt" # Связки @username -> ID
+REPLIES_FILE = "data/replies.json"    # Активные ожидания ответов на посты
+MUTED_FILE = "data/muted.json"        # База замученных пользователей
+DELAYED_FILE = "data/delayed.json"    # База отложенных постов
 
 # ==============================================================================
 # ================= ИНИЦИАЛИЗАЦИЯ ==============================================
@@ -38,16 +47,18 @@ DELAYED_FILE = "data/delayed.json"
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
+# Создаем папку data ДО запуска бота, чтобы файлы могли сохраняться
 if not os.path.exists("data"):
     os.makedirs("data")
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
-active_replies = {}
-cached_users = set()
-muted_users = {}
-delayed_posts = []
+# --- ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ (ХРАНИЛИЩА) ---
+active_replies = {}    # {user_id: message_id_в_канале}
+cached_users = set()   # Кэш ID пользователей в памяти
+muted_users = {}       # {user_id: timestamp_окончания_мута}
+delayed_posts = []     # Список отложенных постов
 
 replies_dirty = False
 user_file_lock = asyncio.Lock()
@@ -58,9 +69,11 @@ usernames_file_lock = asyncio.Lock()
 # ==============================================================================
 
 def esc(s) -> str:
+    """Экранирует пользовательский текст для parse_mode=HTML (защита от сломанной разметки)."""
     return html.escape(s or "", quote=False)
 
 def load_users_cache():
+    """Загружает ID всех пользователей из файла в память при старте бота."""
     global cached_users
     if os.path.exists(USERS_FILE):
         try:
@@ -71,6 +84,7 @@ def load_users_cache():
             cached_users = set()
 
 async def save_user(user_id: int):
+    """Асинхронно сохраняет ID пользователя (запись вынесена за пределы блокировки)."""
     global cached_users
     user_id_str = str(user_id)
     async with user_file_lock:
@@ -85,9 +99,11 @@ async def save_user(user_id: int):
             cached_users.discard(user_id_str)
 
 def get_all_users() -> list[str]:
+    """Возвращает кэшированный список ID (мгновенно, без чтения файла)."""
     return list(cached_users)
 
 def get_main_keyboard() -> ReplyKeyboardMarkup:
+    """Создает нижнюю клавиатуру с кнопкой расписания."""
     return ReplyKeyboardMarkup(
         keyboard=[[KeyboardButton(text="📅 Расписание репетиций")]],
         resize_keyboard=True, is_persistent=True,
@@ -95,6 +111,7 @@ def get_main_keyboard() -> ReplyKeyboardMarkup:
     )
 
 async def save_username(username, user_id: int):
+    """Атомарно сохраняет связку @username -> ID в файл (через .tmp и Lock)."""
     if not username: return
     username = username.lower().lstrip('@')
     async with usernames_file_lock:
@@ -116,6 +133,7 @@ async def save_username(username, user_id: int):
         os.replace(temp_file, USERNAMES_FILE)
 
 def get_id_by_username(username: str):
+    """Ищет ID по юзернейму в файле (на случай, если Telegram скрывает его)."""
     username = username.lower().lstrip('@')
     if not os.path.exists(USERNAMES_FILE): return None
     with open(USERNAMES_FILE, "r", encoding="utf-8") as f:
@@ -128,6 +146,7 @@ def get_id_by_username(username: str):
     return None
 
 def get_username_by_id(user_id: int) -> str:
+    """Ищет @username по ID в файле usernames.txt (для статистики)."""
     if not os.path.exists(USERNAMES_FILE): return "нет username"
     with open(USERNAMES_FILE, "r", encoding="utf-8") as f:
         for line in f:
@@ -136,6 +155,7 @@ def get_username_by_id(user_id: int) -> str:
     return "нет username"
 
 def load_replies():
+    """Загружает активные ответы из JSON при старте."""
     global active_replies
     if os.path.exists(REPLIES_FILE):
         try:
@@ -146,10 +166,12 @@ def load_replies():
             logging.error(f"Ошибка загрузки replies.json: {e}")
 
 def mark_replies_dirty():
+    """Ставит флаг, что данные изменились (для фоновой записи)."""
     global replies_dirty
     replies_dirty = True
 
 async def auto_save_replies():
+    """Фоновая задача: сохраняет active_replies раз в 5 секунд, если были изменения."""
     global replies_dirty
     while True:
         if replies_dirty:
@@ -165,6 +187,7 @@ async def auto_save_replies():
         await asyncio.sleep(5)
 
 def load_muted():
+    """Загружает базу замученных пользователей при старте."""
     global muted_users
     if os.path.exists(MUTED_FILE):
         try:
@@ -175,12 +198,18 @@ def load_muted():
             muted_users = {}
 
 def save_muted():
+    """Сохраняет базу мутов в JSON (атомарно)."""
     temp_file = MUTED_FILE + ".tmp"
     with open(temp_file, "w", encoding="utf-8") as f:
         json.dump(muted_users, f)
     os.replace(temp_file, MUTED_FILE)
 
 def check_mute(user_id: int):
+    """
+    Проверяет, замучен ли пользователь. 
+    Возвращает оставшееся время в секундах или None.
+    Если время истекло, удаляет из базы.
+    """
     if user_id in muted_users:
         remaining = muted_users[user_id] - datetime.now().timestamp()
         if remaining > 0:
@@ -191,6 +220,7 @@ def check_mute(user_id: int):
     return None
 
 def serialize_message(message: Message) -> dict:
+    """Превращает сообщение в словарь для сохранения в отложенные посты."""
     data = {
         "type": message.content_type,
         "text": message.text or message.caption or ""
@@ -218,6 +248,7 @@ def serialize_message(message: Message) -> dict:
     return data
 
 async def send_delayed_post(post: dict):
+    """Отправляет отложенный пост в канал, восстанавливая тип и подпись."""
     try:
         ptype = post.get("type")
         text = post.get("text", "")
@@ -253,6 +284,7 @@ async def send_delayed_post(post: dict):
         logging.error(f"Ошибка отправки отложенного поста: {e}")
 
 def load_delayed():
+    """Загружает отложенные посты при старте с валидацией данных."""
     global delayed_posts
     if not os.path.exists(DELAYED_FILE): return
     try:
@@ -271,6 +303,7 @@ def load_delayed():
         delayed_posts = []
 
 async def _send_media_with_caption(target_id: int, message: Message, caption: str = "", parse_mode=None, reply_to_message_id: int = None) -> Message:
+    """Универсальная функция отправки. Принимает любой тип контента и возвращает объект сообщения."""
     if message.photo: return await bot.send_photo(target_id, photo=message.photo[-1].file_id, caption=caption, parse_mode=parse_mode, reply_to_message_id=reply_to_message_id)
     elif message.video: return await bot.send_video(target_id, video=message.video.file_id, caption=caption, parse_mode=parse_mode, reply_to_message_id=reply_to_message_id)
     elif message.document: return await bot.send_document(target_id, document=message.document.file_id, caption=caption, parse_mode=parse_mode, reply_to_message_id=reply_to_message_id)
@@ -295,6 +328,7 @@ async def _send_media_with_caption(target_id: int, message: Message, caption: st
 @dp.message(Command("admin", "админ"))
 @dp.message(F.text.lower().in_(["!admin", "!админ"]))
 async def admin_panel(message: Message):
+    """Показывает инлайн-меню с кнопками управления."""
     if message.from_user.id not in ADMIN_IDS: return
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📊 Статистика", callback_data="admin_stats")],
@@ -305,10 +339,12 @@ async def admin_panel(message: Message):
 
 @dp.callback_query(F.data.startswith("admin_"))
 async def admin_menu_handler(callback: CallbackQuery):
+    """Обработчик нажатий на кнопки в админ-меню."""
     if callback.from_user.id not in ADMIN_IDS: return
     action = callback.data.replace("admin_", "")
     
     if action == "stats":
+        # Формируем список замученных с юзернеймами
         muted_list = ""
         if muted_users:
             muted_list = "\n\n🔇 <b>Замученные:</b>\n"
@@ -337,6 +373,7 @@ async def admin_menu_handler(callback: CallbackQuery):
         await callback.message.answer("✅ Все ожидания ответов очищены.")
         
     elif action == "settings":
+        # Полная шпаргалка по всем командам
         await callback.message.answer(
             "📚 <b>Полная шпаргалка по командам</b>\n\n"
             "📅 <b>Расписание</b>\n"
@@ -369,6 +406,7 @@ async def admin_menu_handler(callback: CallbackQuery):
 
 @dp.callback_query(F.data == "reply_to_post")
 async def ask_for_reply(callback: CallbackQuery):
+    """Обработчик нажатия на кнопку 'Ответить' под постом в канале."""
     active_replies[callback.from_user.id] = callback.message.message_id
     mark_replies_dirty()
     try:
@@ -382,6 +420,7 @@ async def ask_for_reply(callback: CallbackQuery):
 
 @dp.message(CommandStart())
 async def cmd_start(message: Message):
+    """Обработчик /start. Отправляет приветствие или просит ответ, если пришли по кнопке."""
     await save_user(message.from_user.id)
     await save_username(message.from_user.username, message.from_user.id)
 
@@ -419,6 +458,7 @@ async def cmd_start(message: Message):
 @dp.message(F.text == "📅 Расписание репетиций")
 @dp.message(Command("schedule"))
 async def show_schedule(message: Message):
+    """Отправляет картинку расписания в ЛС."""
     if not os.path.exists(SCHEDULE_FILE):
         await message.answer("❌ Расписание не загружено.")
         return
@@ -433,12 +473,17 @@ async def show_schedule(message: Message):
         logging.error(f"Ошибка расписания: {e}")
         await message.answer("❌ Не удалось загрузить расписание.")
 
+# ==============================================================================
+# ================= ОСНОВНОЙ ОБРАБОТЧИК СООБЩЕНИЙ ==============================
+# ==============================================================================
+
 @dp.message(F.content_type.in_([
     ContentType.TEXT, ContentType.PHOTO, ContentType.VIDEO, ContentType.AUDIO,
     ContentType.DOCUMENT, ContentType.VOICE, ContentType.VIDEO_NOTE, ContentType.STICKER,
     ContentType.CONTACT, ContentType.LOCATION
 ]))
 async def handle_all_messages(message: Message):
+    """Главный обработчик. Принимает любые сообщения и распределяет их по логике."""
     if message.chat.type != "private": return
 
     user = message.from_user
@@ -491,7 +536,7 @@ async def handle_all_messages(message: Message):
                 await message.answer(f"❌ Ошибка сохранения: {e}")
             return
 
-        # 1. Отложенный пост
+        # 1. Отложенный пост (с сохранением оригинальной подписи)
         if text.lower().startswith("!отложка"):
             source = message.text or message.caption or ""
             parts = source.split(maxsplit=2)
@@ -506,7 +551,19 @@ async def handle_all_messages(message: Message):
                     target_dt += timedelta(days=1)
 
                 post_data = serialize_message(message)
-                post_data["text"] = parts[2].strip()
+                clean_text = parts[2].strip() if len(parts) > 2 else ""
+                
+                # Сохраняем оригинальную подпись, если она была
+                if message.caption:
+                    original_caption = message.caption.replace(f"!отложка {parts[1]}", "").strip()
+                    if original_caption and clean_text:
+                        post_data["text"] = f"{original_caption}\n\n{clean_text}"
+                    elif original_caption:
+                        post_data["text"] = original_caption
+                    else:
+                        post_data["text"] = clean_text
+                else:
+                    post_data["text"] = clean_text
 
                 if post_data["type"] in ("video_note", "sticker") and post_data["text"]:
                     await message.answer("⚠️ У кружочков и стикеров нет подписи — текст не будет опубликован.")
@@ -569,23 +626,27 @@ async def handle_all_messages(message: Message):
                 try:
                     await _send_media_with_caption(int(uid_str), message, caption=clean_text, parse_mode=ParseMode.HTML)
                     success += 1
-                    await asyncio.sleep(0.1)
+                    await asyncio.sleep(0.1)  # Задержка от бана
                 except Exception as e:
                     logging.warning(f"Не отправлено {uid_str}: {e}")
             await message.answer(f"✅ Отправлено: {success} из {len(users)}.")
             return
 
-        # 6. Личное сообщение
+        # 6. Личное сообщение (с сохранением подписи к фото)
         if text.lower().startswith("!лс"):
             parts = text.split(maxsplit=2)
             if len(parts) < 2:
                 await message.answer("❌ Формат: !лс ID|@username Текст")
                 return
             target = parts[1]
-            if len(parts) < 3 or not parts[2].strip():
-                if not message.photo and not message.video:
-                    await message.answer("❌ Текст сообщения пуст.")
-                    return
+            
+            dm_text = parts[2] if len(parts) > 2 else ""
+            if message.caption:
+                dm_text = message.caption
+            
+            if not dm_text.strip() and not message.photo and not message.video and not message.document and not message.audio and not message.voice and not message.video_note and not message.sticker:
+                await message.answer("❌ Текст сообщения пуст.")
+                return
 
             try:
                 if target.startswith("@") or not target.isdigit():
@@ -599,7 +660,7 @@ async def handle_all_messages(message: Message):
             except Exception:
                 await message.answer("❌ Пользователь не найден.")
                 return
-            dm_text = parts[2] if len(parts) > 2 else ""
+            
             try:
                 await _send_media_with_caption(target_id, message, caption=dm_text, parse_mode=ParseMode.HTML)
                 await message.answer("✅ Отправлено.")
@@ -623,10 +684,19 @@ async def handle_all_messages(message: Message):
 
         try:
             sent_reply = await _send_media_with_caption(CHANNEL_ID, message, caption=reply_caption, parse_mode=ParseMode.HTML, reply_to_message_id=original_msg_id)
+            
+            # Задержка от флуд-контроля при редактировании
+            await asyncio.sleep(1.5)
+            
             try:
                 await bot.edit_message_reply_markup(chat_id=CHANNEL_ID, message_id=sent_reply.message_id, reply_markup=answer_kb)
+            except TelegramBadRequest as e:
+                if "Flood control exceeded" in str(e):
+                    logging.warning(f"Флуд-контроль при редактировании ответа: {e}")
+                else:
+                    logging.error(f"Кнопка к ответу: {e}")
             except Exception as e:
-                logging.error(f"Кнопка к ответу: {e}")
+                logging.error(f"Кнопка к ответу (общая): {e}")
 
             chat_id_str = str(CHANNEL_ID).replace("-100", "")
             reply_link = f"https://t.me/c/{chat_id_str}/{sent_reply.message_id}"
@@ -675,10 +745,20 @@ async def handle_all_messages(message: Message):
 
     try:
         sent_msg = await _send_media_with_caption(CHANNEL_ID, message, caption=caption_out, parse_mode=ParseMode.HTML)
+        
+        # Задержка от флуд-контроля при редактировании
+        await asyncio.sleep(1.5)
+        
         try:
             await bot.edit_message_reply_markup(chat_id=CHANNEL_ID, message_id=sent_msg.message_id, reply_markup=reply_kb)
+        except TelegramBadRequest as e:
+            if "Flood control exceeded" in str(e):
+                logging.warning(f"Флуд-контроль при редактировании поста: {e}")
+            else:
+                logging.error(f"Кнопка к посту: {e}")
         except Exception as e:
-            logging.error(f"Кнопка к посту: {e}")
+            logging.error(f"Кнопка к посту (общая): {e}")
+
     except Exception as e:
         logging.error(f"Ошибка канала: {e}")
         await message.answer("❌ Ошибка отправки в канал.")
@@ -720,6 +800,7 @@ async def handle_all_messages(message: Message):
 
 @dp.callback_query(F.data.startswith("delete_msg_"))
 async def delete_message_handler(callback: CallbackQuery):
+    """Удаляет сообщение из канала по кнопке 'Удалить' в логах."""
     if callback.from_user.id not in ADMIN_IDS:
         await callback.answer("⛔ Нет доступа")
         return
@@ -740,6 +821,7 @@ async def delete_message_handler(callback: CallbackQuery):
 
 @dp.callback_query(F.data.startswith("mute_menu_"))
 async def mute_menu_handler(callback: CallbackQuery):
+    """Показывает меню выбора времени мута для пользователя."""
     if callback.from_user.id not in ADMIN_IDS:
         await callback.answer("⛔ Нет доступа")
         return
@@ -762,6 +844,7 @@ async def mute_menu_handler(callback: CallbackQuery):
 
 @dp.callback_query(F.data.startswith("mute_set_"))
 async def mute_set_handler(callback: CallbackQuery):
+    """Устанавливает мут на выбранное время и уведомляет пользователя."""
     if callback.from_user.id not in ADMIN_IDS:
         await callback.answer("⛔ Нет доступа")
         return
@@ -775,11 +858,23 @@ async def mute_set_handler(callback: CallbackQuery):
     mute_until = (datetime.now() + timedelta(minutes=minutes)).timestamp()
     muted_users[target_user_id] = mute_until
     save_muted()
-    await callback.message.edit_text(f"✅ Пользователь <code>{target_user_id}</code> замучен на {minutes} мин.", parse_mode=ParseMode.HTML)
+    
+    # УВЕДОМЛЕНИЕ О МУТЕ
+    try:
+        await bot.send_message(
+            target_user_id,
+            f"⚠️ <b>Внимание!</b>\n\nАдминистрация ограничила вашу возможность отправлять сообщения на <b>{minutes} минут</b>.",
+            parse_mode=ParseMode.HTML
+        )
+    except Exception as e:
+        logging.error(f"Не удалось уведомить о муте {target_user_id}: {e}")
+
+    await callback.message.edit_text(f"✅ Пользователь <code>{target_user_id}</code> замучен на {minutes} мин. (уведомление отправлено).", parse_mode=ParseMode.HTML)
     await callback.answer("Мут выдан")
 
 @dp.callback_query(F.data.startswith("unmute_"))
 async def unmute_handler(callback: CallbackQuery):
+    """Снимает мут с пользователя и уведомляет его."""
     if callback.from_user.id not in ADMIN_IDS:
         await callback.answer("⛔ Нет доступа")
         return
@@ -791,6 +886,17 @@ async def unmute_handler(callback: CallbackQuery):
     if target_user_id in muted_users:
         del muted_users[target_user_id]
         save_muted()
+        
+        # УВЕДОМЛЕНИЕ О РАЗМУТЕ
+        try:
+            await bot.send_message(
+                target_user_id,
+                "✅ <b>Хорошие новости!</b>\n\nОграничение на отправку сообщений снято. Вы снова можете писать.",
+                parse_mode=ParseMode.HTML
+            )
+        except Exception as e:
+            logging.error(f"Не удалось уведомить о размуте {target_user_id}: {e}")
+
         await callback.message.edit_text(f"✅ Пользователь <code>{target_user_id}</code> размучен.", parse_mode=ParseMode.HTML)
     else:
         await callback.message.edit_text("ℹ️ Пользователь не в муте.", parse_mode=ParseMode.HTML)
@@ -801,6 +907,7 @@ async def unmute_handler(callback: CallbackQuery):
 # ==============================================================================
 
 async def delayed_poster():
+    """Отправляет отложенные посты. Ошибки не убивают цикл."""
     while True:
         try:
             now_ts = datetime.now().timestamp()
@@ -827,6 +934,7 @@ async def delayed_poster():
         await asyncio.sleep(30)
 
 async def cleanup_muted():
+    """Раз в час чистит базу мутов от истекших записей."""
     while True:
         try:
             now_ts = datetime.now().timestamp()
