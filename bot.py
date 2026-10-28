@@ -17,20 +17,29 @@ from aiogram.exceptions import TelegramBadRequest
 # ================= НАСТРОЙКИ БОТА (МЕНЯТЬ ТОЛЬКО ЗДЕСЬ) =======================
 # ==============================================================================
 
+# Токен берется из переменных окружения (на Bothost он задается в панели управления)
 BOT_TOKEN = os.getenv("BOT_TOKEN")
+
+# ID канала, куда бот публикует анонимки
 CHANNEL_ID = -1002304148771
+
+# ID группы, куда падают логи (кто, что и когда написал)
 LOG_CHAT_ID = -1004306176378
+
+# Список ID пользователей, у которых есть права админа
 ADMIN_IDS = [1088467220, 1690346204]
 
+# Путь к приветственной картинке
 WELCOME_IMAGE = "pictures/Podslushano.png"
 
-LOG_FILE = "data/messages.txt"
-USERS_FILE = "data/users.txt"
-SCHEDULE_FILE = "data/schedule.txt"
-USERNAMES_FILE = "data/usernames.txt"
-REPLIES_FILE = "data/replies.json"
-MUTED_FILE = "data/muted.json"
-DELAYED_FILE = "data/delayed.json"
+# Пути к файлам для хранения данных (в папке data, чтобы не сбрасывались при деплое)
+LOG_FILE = "data/messages.txt"        # Текстовые логи
+USERS_FILE = "data/users.txt"         # База ID пользователей (для рассылки)
+SCHEDULE_FILE = "data/schedule.txt"   # ID картинки расписания
+USERNAMES_FILE = "data/usernames.txt" # Связки @username -> ID
+REPLIES_FILE = "data/replies.json"    # Активные ожидания ответов на посты
+MUTED_FILE = "data/muted.json"        # База замученных пользователей
+DELAYED_FILE = "data/delayed.json"    # База отложенных постов
 
 # ==============================================================================
 # ================= ИНИЦИАЛИЗАЦИЯ ==============================================
@@ -38,6 +47,7 @@ DELAYED_FILE = "data/delayed.json"
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
+# Создаем папку data ДО запуска бота, чтобы файлы могли сохраняться
 if not os.path.exists("data"):
     os.makedirs("data")
 
@@ -45,10 +55,10 @@ bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
 # --- ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ (ХРАНИЛИЩА) ---
-active_replies = {}
-cached_users = set()
-muted_users = {}
-delayed_posts = []
+active_replies = {}    # {user_id: message_id_в_канале}
+cached_users = set()   # Кэш ID пользователей в памяти
+muted_users = {}       # {user_id: timestamp_окончания_мута}
+delayed_posts = []     # Список отложенных постов
 
 replies_dirty = False
 user_file_lock = asyncio.Lock()
@@ -195,7 +205,11 @@ def save_muted():
     os.replace(temp_file, MUTED_FILE)
 
 def check_mute(user_id: int):
-    """Проверяет, замучен ли пользователь. Возвращает оставшееся время в секундах или None."""
+    """
+    Проверяет, замучен ли пользователь. 
+    Возвращает оставшееся время в секундах или None.
+    Если время истекло, удаляет из базы.
+    """
     if user_id in muted_users:
         remaining = muted_users[user_id] - datetime.now().timestamp()
         if remaining > 0:
@@ -240,22 +254,14 @@ async def send_delayed_post(post: dict):
         text = post.get("text", "")
         file_id = post.get("file_id")
 
-        if ptype == "text":
-            await bot.send_message(CHANNEL_ID, text, parse_mode=ParseMode.HTML)
-        elif ptype == "photo":
-            await bot.send_photo(CHANNEL_ID, photo=file_id, caption=text, parse_mode=ParseMode.HTML)
-        elif ptype == "video":
-            await bot.send_video(CHANNEL_ID, video=file_id, caption=text, parse_mode=ParseMode.HTML)
-        elif ptype == "document":
-            await bot.send_document(CHANNEL_ID, document=file_id, caption=text, parse_mode=ParseMode.HTML)
-        elif ptype == "audio":
-            await bot.send_audio(CHANNEL_ID, audio=file_id, caption=text, parse_mode=ParseMode.HTML)
-        elif ptype == "voice":
-            await bot.send_voice(CHANNEL_ID, voice=file_id, caption=text, parse_mode=ParseMode.HTML)
-        elif ptype == "video_note":
-            await bot.send_video_note(CHANNEL_ID, video_note=file_id)
-        elif ptype == "sticker":
-            await bot.send_sticker(CHANNEL_ID, sticker=file_id)
+        if ptype == "text": await bot.send_message(CHANNEL_ID, text, parse_mode=ParseMode.HTML)
+        elif ptype == "photo": await bot.send_photo(CHANNEL_ID, photo=file_id, caption=text, parse_mode=ParseMode.HTML)
+        elif ptype == "video": await bot.send_video(CHANNEL_ID, video=file_id, caption=text, parse_mode=ParseMode.HTML)
+        elif ptype == "document": await bot.send_document(CHANNEL_ID, document=file_id, caption=text, parse_mode=ParseMode.HTML)
+        elif ptype == "audio": await bot.send_audio(CHANNEL_ID, audio=file_id, caption=text, parse_mode=ParseMode.HTML)
+        elif ptype == "voice": await bot.send_voice(CHANNEL_ID, voice=file_id, caption=text, parse_mode=ParseMode.HTML)
+        elif ptype == "video_note": await bot.send_video_note(CHANNEL_ID, video_note=file_id)
+        elif ptype == "sticker": await bot.send_sticker(CHANNEL_ID, sticker=file_id)
         elif ptype == "contact":
             c = post.get("contact", {})
             await bot.send_contact(CHANNEL_ID, phone_number=c.get("phone_number", ""), first_name=c.get("first_name", ""), last_name=c.get("last_name"))
@@ -264,8 +270,7 @@ async def send_delayed_post(post: dict):
             loc = post.get("location", {})
             await bot.send_location(CHANNEL_ID, latitude=loc.get("latitude", 0), longitude=loc.get("longitude", 0))
             if text: await bot.send_message(CHANNEL_ID, text, parse_mode=ParseMode.HTML)
-        else:
-            await bot.send_message(CHANNEL_ID, text)
+        else: await bot.send_message(CHANNEL_ID, text)
     except Exception as e:
         logging.error(f"Ошибка отправки отложенного поста: {e}")
 
@@ -524,7 +529,7 @@ async def handle_all_messages(message: Message):
         known_admin_commands = [
             "!отложка", "!кнопка", "!статистика", 
             "!очистить_ответы", "!рассылка", "!лс", 
-            "!админ", "!admin", "!расписание", "!адс"  # Добавили !адс
+            "!админ", "!admin", "!расписание", "!адс"
         ]
         if not any(text.lower().startswith(cmd) for cmd in known_admin_commands):
             await message.answer("❓ Неизвестная команда. Введите !админ для списка доступных команд.")
@@ -557,25 +562,23 @@ async def handle_all_messages(message: Message):
 
         # 0.1 Сообщение от админа (!адс)
         if text.lower().startswith("!адс"):
-            # Убираем команду из текста
-            clean_text = text[4:].strip() if text else "" # отрезаем "!адс"
+            clean_text = text[4:].strip() if text else ""
             if message.caption:
                 clean_text = message.caption.replace("!адс", "").replace("!АДС", "").strip()
 
-            # Формируем текст с плашкой (два отступа вниз)
-            admin_text = f"<b>Сообщение от админа:</b>\n\n\n{esc(clean_text)}"
+            if not clean_text and not message.photo and not message.video and not message.document and not message.audio and not message.voice and not message.video_note and not message.sticker:
+                await message.answer("❌ Текст сообщения пуст.")
+                return
 
-            # Проверяем, был ли это ответ на сообщение
+            admin_text = f"<b>Сообщение от админа:</b>\n\n\n{esc(clean_text)}"
             reply_to = message.reply_to_message.message_id if message.reply_to_message else None
 
             try:
-                await _send_media_with_caption(
-                    CHANNEL_ID, 
-                    message, 
-                    caption=admin_text, 
-                    parse_mode=ParseMode.HTML,
-                    reply_to_message_id=reply_to
-                )
+                if reply_to and not message.photo and not message.video and not message.document and not message.audio and not message.voice and not message.video_note and not message.sticker:
+                    await bot.send_message(CHANNEL_ID, admin_text, parse_mode=ParseMode.HTML, reply_to_message_id=reply_to)
+                else:
+                    await _send_media_with_caption(CHANNEL_ID, message, caption=admin_text, parse_mode=ParseMode.HTML, reply_to_message_id=reply_to)
+                
                 await message.answer("✅ Сообщение от админа опубликовано в канале.")
             except Exception as e:
                 await message.answer(f"❌ Ошибка публикации: {e}")
@@ -598,6 +601,10 @@ async def handle_all_messages(message: Message):
                 post_data = serialize_message(message)
                 clean_text = parts[2].strip() if len(parts) > 2 else ""
                 
+                if not clean_text and not message.photo and not message.video and not message.document and not message.audio and not message.voice and not message.video_note and not message.sticker:
+                    await message.answer("❌ Текст сообщения пуст.")
+                    return
+
                 if message.caption:
                     original_caption = message.caption.replace(f"!отложка {parts[1]}", "").strip()
                     if original_caption and clean_text:
@@ -1020,6 +1027,9 @@ async def main():
 
     print("Бот запущен. Ожидание сообщений...")
     
+    attempts = 0
+    max_attempts = 5
+
     while True:
         background_tasks = [
             asyncio.create_task(auto_save_replies()),
@@ -1030,7 +1040,11 @@ async def main():
         try:
             await dp.start_polling(bot, skip_updates=True, allowed_updates=["message", "callback_query"])
         except Exception as e:
-            logging.error(f"Ошибка поллинга (переподключение через 5 сек): {e}")
+            logging.error(f"Ошибка поллинга (попытка {attempts + 1}/{max_attempts}): {e}")
+            attempts += 1
+            if attempts >= max_attempts:
+                logging.critical("Бот остановлен: превышено количество попыток переподключения.")
+                break
             await asyncio.sleep(5)
         finally:
             for t in background_tasks:
