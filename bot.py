@@ -11,8 +11,9 @@ from services.scheduler import delayed_poster, cleanup_muted
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-if not os.path.exists("data"):
-    os.makedirs("data")
+from config import DATA_DIR
+if not os.path.exists(DATA_DIR):
+    os.makedirs(DATA_DIR)
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
