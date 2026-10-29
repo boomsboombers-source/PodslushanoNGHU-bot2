@@ -99,13 +99,15 @@ async def ask_for_reply(callback: CallbackQuery):
 async def handle_all_messages(message: Message):
     if message.chat.type != "private": return
 
-    # Пропускаем админов (они обрабатываются в admin_router)
-    if message.from_user.id in ADMIN_IDS:
-        return
-
     user = message.from_user
     text = message.text or message.caption or ""
     now = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
+
+    # Защита: админские !команды не публикуем в канал.
+    # Известные команды уже обработал admin_router (он подключён раньше).
+    # Неизвестные — отсекаем здесь, чтобы не улетели в канал.
+    if user.id in ADMIN_IDS and text.startswith("!"):
+        return
 
     await save_user(user.id)
     await save_username(user.username, user.id)
