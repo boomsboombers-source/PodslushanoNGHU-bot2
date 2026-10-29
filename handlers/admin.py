@@ -183,7 +183,7 @@ async def admin_message(message: Message):
         await message.answer("❌ Текст сообщения пуст.")
         return
 
-    admin_text = f"<b>Сообщение от админа:</b>\n\n\n{esc(clean_text)}"
+    admin_text = f"<b>Сообщение от админа:</b>\n\n{esc(clean_text)}"
     reply_to = message.reply_to_message.message_id if message.reply_to_message else None
 
     try:
