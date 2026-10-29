@@ -127,7 +127,45 @@ async def set_schedule(message: Message):
 
 @admin_router.message(F.text.startswith("!статистика"), F.from_user.id.in_(ADMIN_IDS))
 async def admin_stats_text(message: Message):
-    await message.answer(f"📊 Пользователей: {len(cached_users)}\n💬 В ожидании: {len(active_replies)}\n🔇 В муте: {len(muted_users)}")
+    """Подробная статистика (то же, что кнопка «📊 Статистика» в /admin)."""
+    total_msgs = 0
+    today_msgs = 0
+    today_str = datetime.now().strftime("%d.%m.%Y")
+
+    if os.path.exists(LOG_FILE):
+        try:
+            with open(LOG_FILE, "r", encoding="utf-8") as f:
+                for line in f:
+                    if line.startswith("["):
+                        total_msgs += 1
+                        if line.startswith(f"[{today_str}"):
+                            today_msgs += 1
+        except Exception as e:
+            logging.error(f"Ошибка чтения лог-файла: {e}")
+
+    muted_list = ""
+    if muted_users:
+        muted_list = "\n\n🔇 <b>Замученные:</b>\n"
+        for uid, until_ts in muted_users.items():
+            username = get_username_by_id(uid)
+            remaining = int(until_ts - datetime.now().timestamp())
+            if remaining > 0:
+                minutes = remaining // 60
+                muted_list += f"• {username} (<code>{uid}</code>) — {minutes} мин.\n"
+            else:
+                muted_list += f"• {username} (<code>{uid}</code>) — истек\n"
+    else:
+        muted_list = "\n\n🔇 <b>Замученных нет.</b>"
+
+    await message.answer(
+        f"📊 <b>Статистика:</b>\n"
+        f"👥 Пользователей: <b>{len(cached_users)}</b>\n"
+        f"💬 В ожидании: <b>{len(active_replies)}</b>\n"
+        f"📨 Сообщений всего: <b>{total_msgs}</b>\n"
+        f"📅 Сообщений сегодня: <b>{today_msgs}</b>"
+        f"{muted_list}",
+        parse_mode=ParseMode.HTML
+    )
 
 @admin_router.message(F.text.startswith("!очистить_ответы"), F.from_user.id.in_(ADMIN_IDS))
 async def admin_clear_replies_text(message: Message):
