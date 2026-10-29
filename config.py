@@ -8,6 +8,12 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(BASE_DIR, "data")
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
+if not BOT_TOKEN:
+    raise SystemExit(
+        "❌ BOT_TOKEN не задан. Установите переменную окружения BOT_TOKEN "
+        "в панели Bothost (или в .env)."
+    )
+
 CHANNEL_ID = -1002304148771
 LOG_CHAT_ID = -1004306176378
 ADMIN_IDS = [1088467220, 1690346204]
