@@ -20,16 +20,21 @@ usernames_file_lock = asyncio.Lock()
 # ==============================================================================
 
 def load_users_cache():
+    """Загружает ID всех пользователей из файла в память при старте бота."""
     global cached_users
     if os.path.exists(USERS_FILE):
         try:
             with open(USERS_FILE, "r", encoding="utf-8") as f:
-                cached_users = set(f.read().splitlines())
+                cached_users.clear()
+                cached_users.update(f.read().splitlines())
         except Exception as e:
             logging.error(f"Ошибка загрузки users.txt: {e}")
-            cached_users = set()
+            cached_users.clear()
+    else:
+        logging.warning(f"users.txt не найден по пути: {USERS_FILE}")
 
 async def save_user(user_id: int):
+    """Асинхронно сохраняет ID пользователя (запись вынесена за пределы блокировки)."""
     global cached_users
     user_id_str = str(user_id)
     async with user_file_lock:
@@ -96,12 +101,14 @@ def get_username_by_id(user_id: int) -> str:
 # ==============================================================================
 
 def load_replies():
+    """Загружает активные ответы из JSON при старте."""
     global active_replies
     if os.path.exists(REPLIES_FILE):
         try:
             with open(REPLIES_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
-                active_replies = {int(k): v for k, v in data.items()}
+            active_replies.clear()
+            active_replies.update({int(k): v for k, v in data.items()})
         except Exception as e:
             logging.error(f"Ошибка загрузки replies.json: {e}")
 
@@ -129,14 +136,17 @@ async def auto_save_replies():
 # ==============================================================================
 
 def load_muted():
+    """Загружает базу замученных пользователей при старте."""
     global muted_users
     if os.path.exists(MUTED_FILE):
         try:
             with open(MUTED_FILE, "r", encoding="utf-8") as f:
-                muted_users = {int(k): v for k, v in json.load(f).items()}
+                data = json.load(f)
+            muted_users.clear()
+            muted_users.update({int(k): v for k, v in data.items()})
         except Exception as e:
             logging.error(f"Ошибка загрузки muted.json: {e}")
-            muted_users = {}
+            muted_users.clear()
 
 def save_muted():
     temp_file = MUTED_FILE + ".tmp"
@@ -176,16 +186,19 @@ def serialize_message(message) -> dict:
     return data
 
 def load_delayed():
+    """Загружает отложенные посты при старте с валидацией данных."""
     global delayed_posts
-    if not os.path.exists(DELAYED_FILE): return
+    if not os.path.exists(DELAYED_FILE):
+        return
     try:
         with open(DELAYED_FILE, "r", encoding="utf-8") as f:
             raw = json.load(f)
         if not isinstance(raw, list):
             raise ValueError("delayed.json: ожидался список")
-        valid = [post for post in raw if isinstance(post, dict) and "time" in post and "type" in post]
-        delayed_posts = valid
+        valid = [p for p in raw if isinstance(p, dict) and "time" in p and "type" in p]
+        delayed_posts.clear()
+        delayed_posts.extend(valid)
     except Exception as e:
         logging.error(f"Ошибка загрузки delayed.json: {e}")
         os.replace(DELAYED_FILE, DELAYED_FILE + ".bak")
-        delayed_posts = []
+        delayed_posts.clear()
