@@ -1,6 +1,9 @@
 import asyncio
 import logging
 import os
+import importlib
+import pkgutil
+
 from aiogram import Bot, Dispatcher
 from config import BOT_TOKEN, DATA_DIR
 from handlers.user import user_router
