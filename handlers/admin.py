@@ -119,7 +119,7 @@ async def admin_menu_handler(callback: CallbackQuery):
 # ================= АДМИНСКИЕ КОМАНДЫ (ТЕКСТОВЫЕ) ==============================
 # ==============================================================================
 
-@admin_router.message(F.text.startswith("!расписание"), F.from_user.id.in_(ADMIN_IDS))
+@admin_router.message((F.text | F.caption).startswith("!расписание"), F.from_user.id.in_(ADMIN_IDS))
 async def set_schedule(message: Message):
     if not message.photo:
         await message.answer("❌ Пришлите команду вместе с картинкой расписания.")
@@ -131,7 +131,7 @@ async def set_schedule(message: Message):
     except Exception as e:
         await message.answer(f"❌ Ошибка сохранения: {e}")
 
-@admin_router.message(F.text.startswith("!замены"), F.from_user.id.in_(ADMIN_IDS))
+@admin_router.message((F.text | F.caption).startswith("!замены"), F.from_user.id.in_(ADMIN_IDS))
 async def set_schedule2(message: Message):
     if not message.photo:
         await message.answer("❌ Пришлите команду вместе с картинкой изменений.")
