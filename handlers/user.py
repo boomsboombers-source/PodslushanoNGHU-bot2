@@ -9,7 +9,7 @@ from aiogram.enums import ParseMode, ContentType
 from config import CHANNEL_ID, LOG_CHAT_ID, WELCOME_IMAGE, SCHEDULE_FILE, SCHEDULE2_FILE, LOG_FILE, ADMIN_IDS
 from services.storage import (
     save_user, save_username, active_replies, mark_replies_dirty, check_mute,
-    active_replies_lock
+    active_replies_lock, save_log_msg_id, get_log_msg_id
 )
 from services.media import _send_media_with_caption, esc
 
@@ -159,7 +159,20 @@ async def handle_all_messages(message: Message):
 
             log_kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔗 Перейти", url=reply_link)], [InlineKeyboardButton(text="🗑 Удалить", callback_data=f"delete_msg_{sent_reply.message_id}")], [InlineKeyboardButton(text="⚠️ Мут", callback_data=f"mute_menu_{user.id}")]])
             log_text = f"💬 <b>Ответ</b>\n👤 <b>Автор:</b> {esc(user.full_name)}\n🔗 Username: @{esc(user.username) if user.username else 'нет'}\n🆔 ID: <code>{user.id}</code>\n🕒 Время: {now}\n📝 <b>Текст/Подпись:</b> {esc(text)}"
-            await message.bot.send_message(LOG_CHAT_ID, log_text, parse_mode=ParseMode.HTML, reply_markup=log_kb)
+
+            # Лог ответа — реплай на лог исходного сообщения (если известен)
+            reply_to_log_id = get_log_msg_id(original_msg_id)
+            try:
+                log_msg = await message.bot.send_message(
+                    LOG_CHAT_ID, log_text,
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=log_kb,
+                    reply_to_message_id=reply_to_log_id
+                )
+                # Связываем новый ответ в канале с его лог-сообщением
+                save_log_msg_id(sent_reply.message_id, log_msg.message_id)
+            except Exception as e:
+                logging.error(f"Лог ответа: {e}")
 
             with open(LOG_FILE, "a", encoding="utf-8") as f:
                 f.write(f"[{now}] {user.full_name} ({user.username}, ID: {user.id}) - ОТВЕТ\n")
@@ -198,8 +211,12 @@ async def handle_all_messages(message: Message):
     username = f"@{user.username}" if user.username else "нет username"
     log_text = f"👤 <b>Автор:</b> {esc(user.full_name)}\n🔗 Username: {esc(username)}\n🆔 ID: <code>{user.id}</code>\n🕒 Время: {now}\n💬 <b>Тип:</b> {message.content_type}\n📝 <b>Текст/Подпись:</b> {esc(text)}"
 
-    try: await message.bot.send_message(LOG_CHAT_ID, log_text, parse_mode=ParseMode.HTML, reply_markup=log_kb)
-    except Exception as e: logging.error(f"Лог чат: {e}")
+    # Новый пост — лог без реплая, но сохраняем связь для будущих ответов
+    try:
+        log_msg = await message.bot.send_message(LOG_CHAT_ID, log_text, parse_mode=ParseMode.HTML, reply_markup=log_kb)
+        save_log_msg_id(sent_msg.message_id, log_msg.message_id)
+    except Exception as e:
+        logging.error(f"Лог чат: {e}")
 
     with open(LOG_FILE, "a", encoding="utf-8") as f:
         f.write(f"[{now}] {user.full_name} ({username}, ID: {user.id})\n")
