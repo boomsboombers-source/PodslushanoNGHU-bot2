@@ -6,7 +6,7 @@ from aiogram import Router, F
 from aiogram.types import Message, FSInputFile, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
 from aiogram.filters import CommandStart, Command
 from aiogram.enums import ParseMode, ContentType
-from config import CHANNEL_ID, LOG_CHAT_ID, WELCOME_IMAGE, SCHEDULE_FILE, LOG_FILE, ADMIN_IDS
+from config import CHANNEL_ID, LOG_CHAT_ID, WELCOME_IMAGE, SCHEDULE_FILE, SCHEDULE2_FILE, LOG_FILE, ADMIN_IDS
 from services.storage import (
     save_user, save_username, active_replies, mark_replies_dirty, check_mute,
     active_replies_lock
@@ -17,7 +17,10 @@ user_router = Router()
 
 def get_main_keyboard():
     return ReplyKeyboardMarkup(
-        keyboard=[[KeyboardButton(text="📅 Расписание репетиций")]],
+        keyboard=[
+            [KeyboardButton(text="📅 Расписание репетиций")],
+            [KeyboardButton(text="📅 Замены")],
+        ],
         resize_keyboard=True, is_persistent=True,
         input_field_placeholder="Напиши сообщение для канала..."
     )
@@ -84,6 +87,22 @@ async def show_schedule(message: Message):
     except Exception as e:
         logging.error(f"Ошибка расписания: {e}")
         await message.answer("❌ Не удалось загрузить расписание.")
+
+@user_router.message(F.text == "📅 Замены")
+async def show_schedule2(message: Message):
+    if not os.path.exists(SCHEDULE2_FILE):
+        await message.answer("❌ Изменения в расписании не загружены.")
+        return
+    with open(SCHEDULE2_FILE, "r", encoding="utf-8") as f:
+        photo_id = f.read().strip()
+    if not photo_id:
+        await message.answer("❌ Изменения в расписании не загружены.")
+        return
+    try:
+        await message.bot.send_photo(message.from_user.id, photo=photo_id, caption="📅 <b>Изменения в расписании</b>", parse_mode=ParseMode.HTML)
+    except Exception as e:
+        logging.error(f"Ошибка расписания изменений: {e}")
+        await message.answer("❌ Не удалось загрузить изменения в расписании.")
 
 @user_router.callback_query(F.data == "reply_to_post")
 async def ask_for_reply(callback: CallbackQuery):
