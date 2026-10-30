@@ -10,7 +10,10 @@ from aiogram.filters import Command
 from aiogram.enums import ParseMode
 from aiogram.exceptions import TelegramBadRequest
 
-from config import CHANNEL_ID, LOG_CHAT_ID, ADMIN_IDS, LOG_FILE, SCHEDULE_FILE, SCHEDULE2_FILE, DELAYED_FILE
+from config import (
+    CHANNEL_ID, LOG_CHAT_ID, ADMIN_IDS,
+    LOG_FILE, SCHEDULE_FILE, SCHEDULE2_FILE, DELAYED_FILE
+)
 from services.storage import (
     cached_users, active_replies, mark_replies_dirty, save_user, save_username,
     serialize_message, delayed_posts, get_all_users, get_id_by_username,
@@ -18,6 +21,7 @@ from services.storage import (
 )
 from services.media import _send_media_with_caption, esc
 from services.text import strip_command_prefix, strip_command_and_target
+from services import plugin_registry
 
 admin_router = Router()
 
@@ -32,9 +36,11 @@ async def admin_panel(message: Message):
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📊 Статистика", callback_data="admin_stats")],
         [InlineKeyboardButton(text="🧹 Очистить ответы", callback_data="admin_clear_replies")],
-        [InlineKeyboardButton(text="📚 Команды", callback_data="admin_settings")]
+        [InlineKeyboardButton(text="🔌 Плагины", callback_data="admin_plugins")],
+        [InlineKeyboardButton(text="📚 Команды", callback_data="admin_settings")],
     ])
     await message.answer("🛠 <b>Админ-панель</b>\nВыбери действие:", reply_markup=kb, parse_mode=ParseMode.HTML)
+
 
 @admin_router.callback_query(F.data.startswith("admin_"))
 async def admin_menu_handler(callback: CallbackQuery):
@@ -89,12 +95,57 @@ async def admin_menu_handler(callback: CallbackQuery):
         mark_replies_dirty()
         await callback.message.answer("✅ Все ожидания ответов очищены.")
 
+    elif action == "plugins":
+        plugins = plugin_registry.get_all()
+        back_kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="admin_back")]
+        ])
+        if not plugins:
+            await callback.message.answer(
+                "🔌 <b>Плагины</b>\n\nПока не подключено ни одного плагина.\n"
+                "Положите файл в папку <code>plugins/</code> и перезапустите бота.",
+                parse_mode=ParseMode.HTML, reply_markup=back_kb
+            )
+        else:
+            text = "🔌 <b>Подключённые плагины:</b>\n\n"
+            for i, p in enumerate(plugins, 1):
+                text += f"<b>{i}. {esc(p.get('name', 'Без названия'))}</b>\n"
+                desc = p.get("description", "")
+                if desc:
+                    text += f"<i>{esc(desc)}</i>\n"
+                cmds = p.get("commands", [])
+                if cmds:
+                    for cmd, cmd_desc in cmds:
+                        text += f"• <code>{esc(cmd)}</code> — {esc(cmd_desc)}\n"
+                else:
+                    text += "• <i>команды не указаны</i>\n"
+                text += "\n"
+            await callback.message.answer(text, parse_mode=ParseMode.HTML, reply_markup=back_kb)
+
+    elif action == "back":
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="📊 Статистика", callback_data="admin_stats")],
+            [InlineKeyboardButton(text="🧹 Очистить ответы", callback_data="admin_clear_replies")],
+            [InlineKeyboardButton(text="🔌 Плагины", callback_data="admin_plugins")],
+            [InlineKeyboardButton(text="📚 Команды", callback_data="admin_settings")],
+        ])
+        try:
+            await callback.message.edit_text(
+                "🛠 <b>Админ-панель</b>\nВыбери действие:",
+                reply_markup=kb, parse_mode=ParseMode.HTML
+            )
+        except TelegramBadRequest:
+            await callback.message.answer(
+                "🛠 <b>Админ-панель</b>\nВыбери действие:",
+                reply_markup=kb, parse_mode=ParseMode.HTML
+            )
+
     elif action == "settings":
         await callback.message.answer(
             "📚 <b>Полная шпаргалка по командам</b>\n\n"
             "📅 <b>Расписание</b>\n"
             "• <code>!расписание</code> — <i>прикрепи фото расписания репетиций, в подписи напиши эту команду.</i>\n"
-            "• <code>!замены</code> — <i>то же для изменений в расписании.</i>\n\n"
+            "• <code>!замены</code> — <i>прикрепи фото замен, в подписи напиши эту команду.</i>\n\n"
             "📢 <b>Рассылка</b>\n"
             "• <code>!рассылка [текст]</code> — разошлет текст всем.\n"
             "• <code>!рассылка</code> + фото/видео — разошлет медиа.\n\n"
@@ -110,10 +161,13 @@ async def admin_menu_handler(callback: CallbackQuery):
             "• <code>!кнопка [ID]</code> — добавит кнопки к старому посту.\n\n"
             "📊 <b>Статистика и очистка</b>\n"
             "• <code>!статистика</code> — общая статистика.\n"
-            "• <code>!очистить_ответы</code> — сброс ожиданий.",
+            "• <code>!очистить_ответы</code> — сброс ожиданий.\n\n"
+            "🔌 <b>Плагины</b>\n"
+            "• Кнопка «🔌 Плагины» в админ-панели — список подключённых плагинов и их команд.",
             parse_mode=ParseMode.HTML
         )
     await callback.answer()
+
 
 # ==============================================================================
 # ================= АДМИНСКИЕ КОМАНДЫ (ТЕКСТОВЫЕ) ==============================
@@ -131,17 +185,19 @@ async def set_schedule(message: Message):
     except Exception as e:
         await message.answer(f"❌ Ошибка сохранения: {e}")
 
+
 @admin_router.message((F.text | F.caption).startswith("!замены"), F.from_user.id.in_(ADMIN_IDS))
 async def set_schedule2(message: Message):
     if not message.photo:
-        await message.answer("❌ Пришлите команду вместе с картинкой изменений.")
+        await message.answer("❌ Пришлите команду вместе с картинкой замен.")
         return
     try:
         with open(SCHEDULE2_FILE, "w", encoding="utf-8") as f:
             f.write(message.photo[-1].file_id)
-        await message.answer("✅ Изменения в расписании обновлены!")
+        await message.answer("✅ Замены обновлены!")
     except Exception as e:
         await message.answer(f"❌ Ошибка сохранения: {e}")
+
 
 @admin_router.message(F.text.startswith("!статистика"), F.from_user.id.in_(ADMIN_IDS))
 async def admin_stats_text(message: Message):
@@ -184,11 +240,13 @@ async def admin_stats_text(message: Message):
         parse_mode=ParseMode.HTML
     )
 
+
 @admin_router.message(F.text.startswith("!очистить_ответы"), F.from_user.id.in_(ADMIN_IDS))
 async def admin_clear_replies_text(message: Message):
     active_replies.clear()
     mark_replies_dirty()
     await message.answer("✅ Очищено.")
+
 
 @admin_router.message((F.text | F.caption).startswith("!адс"), F.from_user.id.in_(ADMIN_IDS))
 async def admin_message(message: Message):
@@ -210,6 +268,7 @@ async def admin_message(message: Message):
         await message.answer("✅ Сообщение от админа опубликовано в канале.")
     except Exception as e:
         await message.answer(f"❌ Ошибка публикации: {e}")
+
 
 @admin_router.message((F.text | F.caption).startswith("!отложка"), F.from_user.id.in_(ADMIN_IDS))
 async def set_delayed(message: Message):
@@ -255,6 +314,7 @@ async def set_delayed(message: Message):
     except Exception as e:
         await message.answer(f"❌ Ошибка: {e}")
 
+
 @admin_router.message((F.text | F.caption).startswith("!кнопка"), F.from_user.id.in_(ADMIN_IDS))
 async def add_button(message: Message):
     if message.text is None:
@@ -277,6 +337,7 @@ async def add_button(message: Message):
         else:
             await message.answer(f"❌ Ошибка: {e}")
 
+
 @admin_router.message((F.text | F.caption).startswith("!рассылка"), F.from_user.id.in_(ADMIN_IDS))
 async def broadcast(message: Message):
     source = message.text or message.caption or ""
@@ -297,6 +358,7 @@ async def broadcast(message: Message):
         except Exception as e:
             logging.warning(f"Не отправлено {uid_str}: {e}")
     await message.answer(f"✅ Отправлено: {success} из {len(users)}.")
+
 
 @admin_router.message((F.text | F.caption).startswith("!лс"), F.from_user.id.in_(ADMIN_IDS))
 async def private_message(message: Message):
