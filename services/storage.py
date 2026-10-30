@@ -3,15 +3,17 @@ import json
 import logging
 import asyncio
 from datetime import datetime
-from config import USERS_FILE, USERNAMES_FILE, REPLIES_FILE, MUTED_FILE, DELAYED_FILE
+from config import USERS_FILE, USERNAMES_FILE, REPLIES_FILE, MUTED_FILE, DELAYED_FILE, LOG_IDS_FILE
 
 # --- ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ (ХРАНИЛИЩА) ---
 active_replies = {}
 cached_users = set()
 muted_users = {}
 delayed_posts = []
+log_msg_ids = {}          # {channel_msg_id: log_msg_id}
 
 replies_dirty = False
+log_ids_dirty = False
 user_file_lock = asyncio.Lock()
 usernames_file_lock = asyncio.Lock()
 muted_lock = asyncio.Lock()
@@ -136,6 +138,47 @@ async def auto_save_replies():
                 replies_dirty = False
             except Exception as e:
                 logging.error(f"Ошибка сохранения replies.json: {e}")
+        await asyncio.sleep(5)
+
+# ==============================================================================
+# ================= ЛОГ-СООБЩЕНИЯ (channel_msg_id -> log_msg_id) ===============
+# ==============================================================================
+
+def load_log_ids():
+    global log_msg_ids
+    if os.path.exists(LOG_IDS_FILE):
+        try:
+            with open(LOG_IDS_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            log_msg_ids.clear()
+            log_msg_ids.update({int(k): int(v) for k, v in data.items()})
+        except Exception as e:
+            logging.error(f"Ошибка загрузки log_ids.json: {e}")
+            log_msg_ids.clear()
+
+def mark_log_ids_dirty():
+    global log_ids_dirty
+    log_ids_dirty = True
+
+def save_log_msg_id(channel_msg_id: int, log_msg_id: int):
+    log_msg_ids[int(channel_msg_id)] = int(log_msg_id)
+    mark_log_ids_dirty()
+
+def get_log_msg_id(channel_msg_id: int):
+    return log_msg_ids.get(int(channel_msg_id))
+
+async def auto_save_log_ids():
+    global log_ids_dirty
+    while True:
+        if log_ids_dirty:
+            try:
+                temp_file = LOG_IDS_FILE + ".tmp"
+                with open(temp_file, "w", encoding="utf-8") as f:
+                    json.dump(log_msg_ids, f)
+                os.replace(temp_file, LOG_IDS_FILE)
+                log_ids_dirty = False
+            except Exception as e:
+                logging.error(f"Ошибка сохранения log_ids.json: {e}")
         await asyncio.sleep(5)
 
 # ==============================================================================
