@@ -10,7 +10,7 @@ from aiogram.filters import Command
 from aiogram.enums import ParseMode
 from aiogram.exceptions import TelegramBadRequest
 
-from config import CHANNEL_ID, LOG_CHAT_ID, ADMIN_IDS, LOG_FILE, SCHEDULE_FILE, DELAYED_FILE
+from config import CHANNEL_ID, LOG_CHAT_ID, ADMIN_IDS, LOG_FILE, SCHEDULE_FILE, SCHEDULE2_FILE, DELAYED_FILE
 from services.storage import (
     cached_users, active_replies, mark_replies_dirty, save_user, save_username,
     serialize_message, delayed_posts, get_all_users, get_id_by_username,
@@ -93,7 +93,8 @@ async def admin_menu_handler(callback: CallbackQuery):
         await callback.message.answer(
             "📚 <b>Полная шпаргалка по командам</b>\n\n"
             "📅 <b>Расписание</b>\n"
-            "• <code>!расписание</code> — <i>прикрепи фото расписания, в подписи напиши эту команду.</i>\n\n"
+            "• <code>!расписание</code> — <i>прикрепи фото расписания репетиций, в подписи напиши эту команду.</i>\n"
+            "• <code>!замены</code> — <i>то же для изменений в расписании.</i>\n\n"
             "📢 <b>Рассылка</b>\n"
             "• <code>!рассылка [текст]</code> — разошлет текст всем.\n"
             "• <code>!рассылка</code> + фото/видео — разошлет медиа.\n\n"
@@ -127,6 +128,18 @@ async def set_schedule(message: Message):
         with open(SCHEDULE_FILE, "w", encoding="utf-8") as f:
             f.write(message.photo[-1].file_id)
         await message.answer("✅ Расписание успешно обновлено!")
+    except Exception as e:
+        await message.answer(f"❌ Ошибка сохранения: {e}")
+
+@admin_router.message(F.text.startswith("!замены"), F.from_user.id.in_(ADMIN_IDS))
+async def set_schedule2(message: Message):
+    if not message.photo:
+        await message.answer("❌ Пришлите команду вместе с картинкой изменений.")
+        return
+    try:
+        with open(SCHEDULE2_FILE, "w", encoding="utf-8") as f:
+            f.write(message.photo[-1].file_id)
+        await message.answer("✅ Изменения в расписании обновлены!")
     except Exception as e:
         await message.answer(f"❌ Ошибка сохранения: {e}")
 
