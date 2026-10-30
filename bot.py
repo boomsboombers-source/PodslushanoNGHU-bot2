@@ -1,22 +1,21 @@
 import asyncio
 import logging
 import os
-import importlib
-import pkgutil
-
 from aiogram import Bot, Dispatcher
 from config import BOT_TOKEN, DATA_DIR
 from handlers.user import user_router
 from handlers.admin import admin_router
 from handlers.moderation import moderation_router
-from services.storage import load_users_cache, load_replies, load_muted, load_delayed, auto_save_replies
+from services.storage import (
+    load_users_cache, load_replies, load_muted, load_delayed,
+    load_log_ids, auto_save_replies, auto_save_log_ids
+)
 from services.scheduler import delayed_poster, cleanup_muted
 from services import plugin_registry
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-if not os.path.exists(DATA_DIR):
-    os.makedirs(DATA_DIR)
+os.makedirs(DATA_DIR, exist_ok=True)
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
@@ -91,11 +90,13 @@ async def main():
     load_replies()
     load_muted()
     load_delayed()
+    load_log_ids()
 
     logging.info("Бот запущен. Ожидание сообщений...")
 
     background_tasks = [
         asyncio.create_task(auto_save_replies()),
+        asyncio.create_task(auto_save_log_ids()),
         asyncio.create_task(delayed_poster(bot)),
         asyncio.create_task(cleanup_muted()),
     ]
