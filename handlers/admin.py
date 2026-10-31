@@ -257,8 +257,18 @@ async def admin_message(message: Message):
         await message.answer("❌ Текст сообщения пуст.")
         return
 
-    admin_text = f"<b>Сообщение от админа:</b>\n\n\n{esc(clean_text)}"
-    reply_to = message.reply_to_message.message_id if message.reply_to_message else None
+    # 1) Если админ жал «Ответить» под постом — берём id поста из active_replies
+    async with active_replies_lock:
+        pending_reply_to = active_replies.pop(message.from_user.id, None)
+    if pending_reply_to is not None:
+        mark_replies_dirty()
+
+    # 2) Fallback: reply_to_message (id в ЛС — для канала не годится, но оставим как было)
+    reply_to = pending_reply_to
+    if reply_to is None and message.reply_to_message:
+        reply_to = message.reply_to_message.message_id
+
+    admin_text = f"<b>⚠️ Сообщение от админа:</b>\n\n{esc(clean_text)}"
 
     try:
         if reply_to and not message.photo and not message.video and not message.document and not message.audio and not message.voice and not message.video_note and not message.sticker:
