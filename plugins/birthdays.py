@@ -14,6 +14,7 @@ import json
 import logging
 import asyncio
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from aiogram import Router, F
 from aiogram.types import Message
@@ -117,7 +118,7 @@ def _display_name(chat) -> str:
 
 @router.message(F.text.lower().startswith("!др_сегодня"), F.from_user.id.in_(ADMIN_IDS))
 async def bday_today(message: Message):
-    today = datetime.now().strftime("%d.%m")
+    today = datetime.now(ZoneInfo("Asia/Novosibirsk")).strftime("%d.%m")
     people = [uid for uid, dm in birthdays.items() if dm == today]
     if not people:
         await message.answer(f"📅 Сегодня ({today}) ДР ни у кого нет.")
@@ -209,7 +210,7 @@ async def del_birthday(message: Message):
 async def auto_congratulate(bot):
     """Проверяет, у кого сегодня ДР, и публикует в канал (1 раз в день)."""
     global published_today
-    now = datetime.now()
+    now = datetime.now(ZoneInfo("Asia/Novosibirsk"))
     today_dm = now.strftime("%d.%m")
     today_full = now.strftime("%d.%m.%Y")
 
