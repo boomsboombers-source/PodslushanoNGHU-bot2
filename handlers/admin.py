@@ -3,6 +3,7 @@ import json
 import logging
 import asyncio
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 from aiogram import Router, F
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
@@ -297,8 +298,12 @@ async def set_delayed(message: Message):
         return
     try:
         h, m = map(int, parts[1].split(":"))
-        now_dt = datetime.now()
+        
+        # Берем текущее время по Новосибирску
+        now_dt = datetime.now(ZoneInfo("Asia/Novosibirsk"))
         target_dt = now_dt.replace(hour=h, minute=m, second=0, microsecond=0)
+        
+        # Если время уже прошло — ставим на завтра
         if target_dt < now_dt:
             target_dt += timedelta(days=1)
 
@@ -328,7 +333,7 @@ async def set_delayed(message: Message):
         with open(DELAYED_FILE, "w", encoding="utf-8") as f:
             json.dump(delayed_posts, f)
 
-        await message.answer(f"⏰ Пост будет опубликован в {target_dt.strftime('%H:%M')}.")
+        await message.answer(f"⏰ Пост будет опубликован в {target_dt.strftime('%H:%M')} (НСК).")
     except Exception as e:
         await message.answer(f"❌ Ошибка: {e}")
 
