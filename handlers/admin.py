@@ -17,7 +17,7 @@ from config import (
 from services.storage import (
     cached_users, active_replies, mark_replies_dirty, save_user, save_username,
     serialize_message, delayed_posts, get_all_users, get_id_by_username,
-    get_username_by_id, muted_users
+    get_username_by_id, muted_users, active_replies_lock
 )
 from services.media import _send_media_with_caption, esc
 from services.text import strip_command_prefix, strip_command_and_target
