@@ -98,14 +98,27 @@ async def main():
 
     # плагины уже загружены на уровне модуля, birthdays импортирован
     from plugins.birthdays import auto_congratulate
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
 
     async def _birthday_loop():
+        NSK_TZ = ZoneInfo("Asia/Novosibirsk")
+        
         while True:
-            try:
-                await auto_congratulate(bot)
-            except Exception as e:
-                logging.error(f"birthdays loop: {e}")
-            await asyncio.sleep(3600)  # раз в час проверка
+            # Получаем текущее время в Новосибирске
+            now = datetime.now(NSK_TZ)
+            
+            # С 08:00 до 08:05
+            if now.hour == 8 and now.minute < 5:
+                try:
+                    await auto_congratulate(bot)
+                except Exception as e:
+                    logging.error(f"birthdays loop: {e}")
+                # Ждем 10 минут, чтобы не спамить в течение этой пятиминутки
+                await asyncio.sleep(600)
+            else:
+                # Проверяем каждую минуту
+                await asyncio.sleep(60)
 
     background_tasks = [
         asyncio.create_task(auto_save_replies()),
