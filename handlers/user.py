@@ -86,7 +86,7 @@ async def show_schedule(message: Message):
         logging.error(f"Ошибка расписания: {e}")
         await message.answer("❌ Не удалось загрузить расписание.")
 
-@user_router.message(F.text == "📅 Замены")
+@user_router.message(F.text == "📌 Замены")
 async def show_schedule2(message: Message):
     if not os.path.exists(SCHEDULE2_FILE):
         await message.answer("❌ Изменения в расписании не загружены.")
