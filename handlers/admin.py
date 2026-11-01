@@ -257,28 +257,36 @@ async def admin_message(message: Message):
         await message.answer("❌ Текст сообщения пуст.")
         return
 
-    # 1) Если админ жал «Ответить» под постом — берём id поста из active_replies
+    # 1) Проверяем, нажимал ли админ кнопку «Ответить» в канале
     async with active_replies_lock:
-        pending_reply_to = active_replies.pop(message.from_user.id, None)
-    if pending_reply_to is not None:
+        reply_to = active_replies.pop(message.from_user.id, None)
+    
+    if reply_to is not None:
         mark_replies_dirty()
 
-    # 2) Fallback: reply_to_message (id в ЛС — для канала не годится, но оставим как было)
-    reply_to = pending_reply_to
-    if reply_to is None and message.reply_to_message:
-        reply_to = message.reply_to_message.message_id
-
+    # 2) Если reply_to нет (None), значит это просто новое сообщение
     admin_text = f"<b>⚠️ Сообщение от админа:</b>\n\n{esc(clean_text)}"
 
-    try:
-        if reply_to and not message.photo and not message.video and not message.document and not message.audio and not message.voice and not message.video_note and not message.sticker:
-            await message.bot.send_message(CHANNEL_ID, admin_text, parse_mode=ParseMode.HTML, reply_to_message_id=reply_to)
+    async def _send(reply_id):
+        if reply_id and not message.photo and not message.video and not message.document and not message.audio and not message.voice and not message.video_note and not message.sticker:
+            return await message.bot.send_message(CHANNEL_ID, admin_text, parse_mode=ParseMode.HTML, reply_to_message_id=reply_id)
         else:
-            await _send_media_with_caption(message.bot, CHANNEL_ID, message, caption=admin_text, parse_mode=ParseMode.HTML, reply_to_message_id=reply_to)
+            return await _send_media_with_caption(message.bot, CHANNEL_ID, message, caption=admin_text, parse_mode=ParseMode.HTML, reply_to_message_id=reply_id)
+
+    try:
+        try:
+            await _send(reply_to)
+        except Exception as e:
+            # Если пост, на который хотели ответить, удален (или ID битый)
+            if "message to be replied not found" in str(e):
+                logging.warning(f"Не найдено сообщение {reply_to} для реплая. Отправляю без реплая.")
+                await _send(None)
+            else:
+                raise e
+
         await message.answer("✅ Сообщение от админа опубликовано в канале.")
     except Exception as e:
         await message.answer(f"❌ Ошибка публикации: {e}")
-
 
 @admin_router.message((F.text | F.caption).startswith("!отложка"), F.from_user.id.in_(ADMIN_IDS))
 async def set_delayed(message: Message):
