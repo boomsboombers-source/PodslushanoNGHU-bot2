@@ -80,7 +80,6 @@ def load_plugins(dp: Dispatcher) -> None:
 
         logging.info(f"✅ Плагин загружен: {name}")
 
-
 # Порядок: плагины → admin → moderation → user (самый широкий последним)
 load_plugins(dp)
 dp.include_router(admin_router)
@@ -97,11 +96,23 @@ async def main():
 
     logging.info("Бот запущен. Ожидание сообщений...")
 
+    # плагины уже загружены на уровне модуля, birthdays импортирован
+    from plugins.birthdays import auto_congratulate
+
+    async def _birthday_loop():
+        while True:
+            try:
+                await auto_congratulate(bot)
+            except Exception as e:
+                logging.error(f"birthdays loop: {e}")
+            await asyncio.sleep(3600)  # раз в час проверка
+
     background_tasks = [
         asyncio.create_task(auto_save_replies()),
         asyncio.create_task(auto_save_log_ids()),
         asyncio.create_task(delayed_poster(bot)),
         asyncio.create_task(cleanup_muted()),
+        asyncio.create_task(_birthday_loop()),
     ]
 
     try:
