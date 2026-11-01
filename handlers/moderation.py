@@ -1,5 +1,6 @@
 import logging
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 from aiogram import Router, F
 from aiogram.types import CallbackQuery, Message, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.fsm.context import FSMContext
@@ -104,7 +105,9 @@ async def process_mute_reason(message: Message, state: FSMContext):
     if reason.lower() == "/skip":
         reason = ""
 
-    mute_until = (datetime.now() + timedelta(minutes=minutes)).timestamp()
+    # Берем текущее время по Новосибирску
+    now_nsk = datetime.now(ZoneInfo("Asia/Novosibirsk"))
+    mute_until = (now_nsk + timedelta(minutes=minutes)).timestamp()
     muted_users[target_user_id] = mute_until
     await save_muted()
 
