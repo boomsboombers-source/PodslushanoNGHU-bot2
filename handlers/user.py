@@ -12,6 +12,7 @@ from services.storage import (
     active_replies_lock, save_log_msg_id, get_log_msg_id
 )
 from services.media import _send_media_with_caption, esc
+from zoneinfo import ZoneInfo
 
 user_router = Router()
 
@@ -144,7 +145,7 @@ async def handle_all_messages(message: Message):
 
     user = message.from_user
     text = message.text or message.caption or ""
-    now = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
+    now = datetime.now(ZoneInfo("Asia/Novosibirsk")).strftime("%d.%m.%Y %H:%M:%S")
 
     # Админские !команды не публикуем в канал (их уже обработал admin_router или они неизвестны)
     if user.id in ADMIN_IDS and text.startswith("!"):
