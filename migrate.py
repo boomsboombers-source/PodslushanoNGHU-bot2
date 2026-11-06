@@ -1,9 +1,9 @@
 import asyncio
 import json
 import os
-import aiosqlite
 from config import DATA_DIR
-from services.database import init_db, close_db, db
+import services.database as db_module
+from services.database import init_db, close_db
 
 USERNAMES_FILE = os.path.join(DATA_DIR, "usernames.txt")
 LOG_IDS_FILE = os.path.join(DATA_DIR, "log_ids.json")
@@ -22,13 +22,13 @@ async def migrate():
                 if ":" in line:
                     username, user_id = line.rsplit(":", 1)
                     try:
-                        await db.execute(
+                        await db_module.db.execute(
                             "INSERT OR REPLACE INTO usernames (user_id, username) VALUES (?, ?)",
                             (int(user_id), username)
                         )
                     except ValueError:
                         pass
-        await db.commit()
+        await db_module.db.commit()
         print("✅ Usernames перенесены")
 
     # 2. Перенос Log IDs
@@ -37,11 +37,11 @@ async def migrate():
         with open(LOG_IDS_FILE, "r", encoding="utf-8") as f:
             data = json.load(f)
             for channel_id, log_id in data.items():
-                await db.execute(
+                await db_module.db.execute(
                     "INSERT OR REPLACE INTO log_ids (channel_msg_id, log_msg_id) VALUES (?, ?)",
                     (int(channel_id), int(log_id))
                 )
-        await db.commit()
+        await db_module.db.commit()
         print("✅ Log IDs перенесены")
 
     # 3. Перенос Messages
@@ -51,11 +51,11 @@ async def migrate():
             for line in f:
                 line = line.strip()
                 if line and not line.startswith("-"):
-                    await db.execute(
+                    await db_module.db.execute(
                         "INSERT INTO messages (user_id, date, type, text) VALUES (?, ?, ?, ?)",
                         (0, "old", "unknown", line)
                     )
-        await db.commit()
+        await db_module.db.commit()
         print("✅ Messages перенесены")
 
     await close_db()
