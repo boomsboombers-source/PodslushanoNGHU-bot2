@@ -12,7 +12,6 @@ from services.storage import (
     active_replies_lock, save_log_msg_id, get_log_msg_id
 )
 from services.media import _send_media_with_caption, esc
-from zoneinfo import ZoneInfo
 
 user_router = Router()
 
@@ -145,7 +144,7 @@ async def handle_all_messages(message: Message):
 
     user = message.from_user
     text = message.text or message.caption or ""
-    now = datetime.now(ZoneInfo("Asia/Novosibirsk")).strftime("%d.%m.%Y %H:%M:%S")
+    now = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
 
     # Админские !команды не публикуем в канал (их уже обработал admin_router или они неизвестны)
     if user.id in ADMIN_IDS and text.startswith("!"):
@@ -182,7 +181,7 @@ async def handle_all_messages(message: Message):
             log_text = f"💬 <b>Ответ</b>\n👤 <b>Автор:</b> {esc(user.full_name)}\n🔗 Username: @{esc(user.username) if user.username else 'нет'}\n🆔 ID: <code>{user.id}</code>\n🕒 Время: {now}\n📝 <b>Текст/Подпись:</b> {esc(text)}"
 
             # Лог ответа — реплай на лог исходного сообщения (если известен)
-            reply_to_log_id = get_log_msg_id(original_msg_id)
+            reply_to_log_id = await get_log_msg_id(original_msg_id)
             try:
                 log_msg = await message.bot.send_message(
                     LOG_CHAT_ID, log_text,
@@ -191,7 +190,7 @@ async def handle_all_messages(message: Message):
                     reply_to_message_id=reply_to_log_id
                 )
                 # Связываем новый ответ в канале с его лог-сообщением
-                save_log_msg_id(sent_reply.message_id, log_msg.message_id)
+                await save_log_msg_id(sent_reply.message_id, log_msg.message_id)
             except Exception as e:
                 logging.error(f"Лог ответа: {e}")
 
@@ -235,7 +234,7 @@ async def handle_all_messages(message: Message):
     # Новый пост — лог без реплая, но сохраняем связь для будущих ответов
     try:
         log_msg = await message.bot.send_message(LOG_CHAT_ID, log_text, parse_mode=ParseMode.HTML, reply_markup=log_kb)
-        save_log_msg_id(sent_msg.message_id, log_msg.message_id)
+        await save_log_msg_id(sent_msg.message_id, log_msg.message_id)
     except Exception as e:
         logging.error(f"Лог чат: {e}")
 
