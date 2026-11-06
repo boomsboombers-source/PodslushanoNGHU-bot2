@@ -12,6 +12,7 @@ from services.storage import (
     active_replies_lock, save_log_msg_id, get_log_msg_id
 )
 from services.media import _send_media_with_caption, esc
+from services.database import log_message_db
 
 user_router = Router()
 
@@ -194,9 +195,7 @@ async def handle_all_messages(message: Message):
             except Exception as e:
                 logging.error(f"Лог ответа: {e}")
 
-            with open(LOG_FILE, "a", encoding="utf-8") as f:
-                f.write(f"[{now}] {user.full_name} ({user.username}, ID: {user.id}) - ОТВЕТ\n")
-                f.write(f"Текст: {text}\n" + "-" * 40 + "\n")
+            await log_message_db(user.id, now, "reply", text)
 
             channel_kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="📢 Перейти к сообщению", url=reply_link)]])
             await message.answer("✅ Твой анонимный ответ опубликован в канале!", reply_markup=channel_kb)
@@ -238,9 +237,7 @@ async def handle_all_messages(message: Message):
     except Exception as e:
         logging.error(f"Лог чат: {e}")
 
-    with open(LOG_FILE, "a", encoding="utf-8") as f:
-        f.write(f"[{now}] {user.full_name} ({username}, ID: {user.id})\n")
-        f.write(f"Тип: {message.content_type}. Текст: {text}\n" + "-" * 40 + "\n")
+    await log_message_db(user.id, now, message.content_type, text)
 
     channel_kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="📢 Перейти к сообщению", url=msg_link)]])
     await message.answer("✅ Сообщение отправлено в канал анонимно.", reply_markup=channel_kb)
