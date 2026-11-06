@@ -5,6 +5,8 @@ import asyncio
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
+import aiosqlite
+
 from aiogram import Router, F
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.filters import Command
@@ -13,7 +15,7 @@ from aiogram.exceptions import TelegramBadRequest
 
 from config import (
     CHANNEL_ID, LOG_CHAT_ID, ADMIN_IDS,
-    LOG_FILE, SCHEDULE_FILE, SCHEDULE2_FILE, DELAYED_FILE
+    SCHEDULE_FILE, SCHEDULE2_FILE, DELAYED_FILE, DATA_DIR
 )
 from services.storage import (
     cached_users, active_replies, mark_replies_dirty, save_user, save_username,
@@ -25,6 +27,56 @@ from services.text import strip_command_prefix, strip_command_and_target
 from services import plugin_registry
 
 admin_router = Router()
+
+DB_PATH = os.path.join(DATA_DIR, "bot.db")
+
+# ==============================================================================
+# ================= ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ====================================
+# ==============================================================================
+
+async def _get_stats_from_db() -> tuple[int, int]:
+    """Возвращает (всего сообщений, сообщений сегодня)."""
+    today_str = datetime.now(ZoneInfo("Asia/Novosibirsk")).strftime("%d.%m.%Y")
+    try:
+        async with aiosqlite.connect(DB_PATH) as db:
+            async with db.execute("SELECT COUNT(*) FROM messages") as cur:
+                total = (await cur.fetchone())[0]
+            
+            # Ищем по дате. В БД мы пишем `date` в формате "ДД.ММ.ГГГГ ЧЧ:ММ:СС"
+            # Поэтому ищем те, что начинаются с сегодняшней даты
+            async with db.execute("SELECT COUNT(*) FROM messages WHERE date LIKE ?", (f"{today_str}%",)) as cur:
+                today = (await cur.fetchone())[0]
+        return total, today
+    except Exception as e:
+        logging.error(f"Ошибка чтения статистики из БД: {e}")
+        return 0, 0
+
+async def _build_stats_text() -> str:
+    """Собирает текст статистики для админа."""
+    total_msgs, today_msgs = await _get_stats_from_db()
+
+    muted_list = ""
+    if muted_users:
+        muted_list = "\n\n🔇 <b>Замученные:</b>\n"
+        for uid, until_ts in muted_users.items():
+            username = await get_username_by_id(uid) # Теперь async
+            remaining = int(until_ts - datetime.now().timestamp())
+            if remaining > 0:
+                minutes = remaining // 60
+                muted_list += f"• {username} (<code>{uid}</code>) — {minutes} мин.\n"
+            else:
+                muted_list += f"• {username} (<code>{uid}</code>) — истек\n"
+    else:
+        muted_list = "\n\n🔇 <b>Замученных нет.</b>"
+
+    return (
+        f"📊 <b>Статистика:</b>\n"
+        f"👥 Пользователей: <b>{len(cached_users)}</b>\n"
+        f"💬 В ожидании: <b>{len(active_replies)}</b>\n"
+        f"📨 Сообщений всего: <b>{total_msgs}</b>\n"
+        f"📅 Сообщений сегодня: <b>{today_msgs}</b>"
+        f"{muted_list}"
+    )
 
 # ==============================================================================
 # ================= АДМИН-ПАНЕЛЬ ===============================================
@@ -52,44 +104,8 @@ async def admin_menu_handler(callback: CallbackQuery):
     action = callback.data.replace("admin_", "")
 
     if action == "stats":
-        total_msgs = 0
-        today_msgs = 0
-        today_str = datetime.now().strftime("%d.%m.%Y")
-
-        if os.path.exists(LOG_FILE):
-            try:
-                with open(LOG_FILE, "r", encoding="utf-8") as f:
-                    for line in f:
-                        if line.startswith("["):
-                            total_msgs += 1
-                            if line.startswith(f"[{today_str}"):
-                                today_msgs += 1
-            except Exception as e:
-                logging.error(f"Ошибка чтения лог-файла: {e}")
-
-        muted_list = ""
-        if muted_users:
-            muted_list = "\n\n🔇 <b>Замученные:</b>\n"
-            for uid, until_ts in muted_users.items():
-                username = get_username_by_id(uid)
-                remaining = int(until_ts - datetime.now().timestamp())
-                if remaining > 0:
-                    minutes = remaining // 60
-                    muted_list += f"• {username} (<code>{uid}</code>) — {minutes} мин.\n"
-                else:
-                    muted_list += f"• {username} (<code>{uid}</code>) — истек\n"
-        else:
-            muted_list = "\n\n🔇 <b>Замученных нет.</b>"
-
-        await callback.message.answer(
-            f"📊 <b>Статистика:</b>\n"
-            f"👥 Пользователей: <b>{len(cached_users)}</b>\n"
-            f"💬 В ожидании: <b>{len(active_replies)}</b>\n"
-            f"📨 Сообщений всего: <b>{total_msgs}</b>\n"
-            f"📅 Сообщений сегодня: <b>{today_msgs}</b>"
-            f"{muted_list}",
-            parse_mode=ParseMode.HTML
-        )
+        text = await _build_stats_text()
+        await callback.message.answer(text, parse_mode=ParseMode.HTML)
 
     elif action == "clear_replies":
         active_replies.clear()
@@ -202,44 +218,8 @@ async def set_schedule2(message: Message):
 
 @admin_router.message(F.text.startswith("!статистика"), F.from_user.id.in_(ADMIN_IDS))
 async def admin_stats_text(message: Message):
-    total_msgs = 0
-    today_msgs = 0
-    today_str = datetime.now().strftime("%d.%m.%Y")
-
-    if os.path.exists(LOG_FILE):
-        try:
-            with open(LOG_FILE, "r", encoding="utf-8") as f:
-                for line in f:
-                    if line.startswith("["):
-                        total_msgs += 1
-                        if line.startswith(f"[{today_str}"):
-                            today_msgs += 1
-        except Exception as e:
-            logging.error(f"Ошибка чтения лог-файла: {e}")
-
-    muted_list = ""
-    if muted_users:
-        muted_list = "\n\n🔇 <b>Замученные:</b>\n"
-        for uid, until_ts in muted_users.items():
-            username = get_username_by_id(uid)
-            remaining = int(until_ts - datetime.now().timestamp())
-            if remaining > 0:
-                minutes = remaining // 60
-                muted_list += f"• {username} (<code>{uid}</code>) — {minutes} мин.\n"
-            else:
-                muted_list += f"• {username} (<code>{uid}</code>) — истек\n"
-    else:
-        muted_list = "\n\n🔇 <b>Замученных нет.</b>"
-
-    await message.answer(
-        f"📊 <b>Статистика:</b>\n"
-        f"👥 Пользователей: <b>{len(cached_users)}</b>\n"
-        f"💬 В ожидании: <b>{len(active_replies)}</b>\n"
-        f"📨 Сообщений всего: <b>{total_msgs}</b>\n"
-        f"📅 Сообщений сегодня: <b>{today_msgs}</b>"
-        f"{muted_list}",
-        parse_mode=ParseMode.HTML
-    )
+    text = await _build_stats_text()
+    await message.answer(text, parse_mode=ParseMode.HTML)
 
 
 @admin_router.message(F.text.startswith("!очистить_ответы"), F.from_user.id.in_(ADMIN_IDS))
@@ -265,7 +245,6 @@ async def admin_message(message: Message):
     if reply_to is not None:
         mark_replies_dirty()
 
-    # 2) Если reply_to нет (None), значит это просто новое сообщение
     admin_text = f"<b>⚠️ Сообщение от админа:</b>\n\n{esc(clean_text)}"
 
     async def _send(reply_id):
@@ -278,7 +257,6 @@ async def admin_message(message: Message):
         try:
             await _send(reply_to)
         except Exception as e:
-            # Если пост, на который хотели ответить, удален (или ID битый)
             if "message to be replied not found" in str(e):
                 logging.warning(f"Не найдено сообщение {reply_to} для реплая. Отправляю без реплая.")
                 await _send(None)
@@ -288,6 +266,7 @@ async def admin_message(message: Message):
         await message.answer("✅ Сообщение от админа опубликовано в канале.")
     except Exception as e:
         await message.answer(f"❌ Ошибка публикации: {e}")
+
 
 @admin_router.message((F.text | F.caption).startswith("!отложка"), F.from_user.id.in_(ADMIN_IDS))
 async def set_delayed(message: Message):
@@ -403,7 +382,7 @@ async def private_message(message: Message):
 
     try:
         if target.startswith("@") or not target.isdigit():
-            target_id = get_id_by_username(target.lstrip('@'))
+            target_id = await get_id_by_username(target.lstrip('@'))
             if not target_id:
                 chat = await message.bot.get_chat(target)
                 target_id = chat.id
