@@ -4,13 +4,17 @@ import logging
 import asyncio
 from datetime import datetime
 from config import USERS_FILE, USERNAMES_FILE, REPLIES_FILE, MUTED_FILE, DELAYED_FILE, LOG_IDS_FILE
+from services.database import (
+    save_username_db, get_username_by_id_db, 
+    save_log_id_db, get_log_msg_id_db
+)
 
 # --- ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ (ХРАНИЛИЩА) ---
 active_replies = {}
 cached_users = set()
 muted_users = {}
 delayed_posts = []
-log_msg_ids = {}          # {channel_msg_id: log_msg_id}
+log_msg_ids = {}          # Оставляем для обратной совместимости, но используем БД
 
 replies_dirty = False
 log_ids_dirty = False
@@ -58,27 +62,9 @@ def get_all_users() -> list[str]:
 # ==============================================================================
 
 async def save_username(username, user_id: int):
-    if not username: return
-    username = username.lower().lstrip('@')
-    async with usernames_file_lock:
-        temp_file = USERNAMES_FILE + ".tmp"
-        lines = []
-        if os.path.exists(USERNAMES_FILE):
-            with open(USERNAMES_FILE, "r", encoding="utf-8") as f:
-                lines = f.read().splitlines()
-        updated = False
-        for i, line in enumerate(lines):
-            if line.startswith(f"{username}:"):
-                lines[i] = f"{username}:{user_id}"
-                updated = True
-                break
-        if not updated:
-            lines.append(f"{username}:{user_id}")
-        with open(temp_file, "w", encoding="utf-8") as f:
-            f.write("\n".join(lines) + "\n")
-        os.replace(temp_file, USERNAMES_FILE)
+    await save_username_db(user_id, username)
 
-def get_id_by_username(username: str):
+async def get_id_by_username(username: str):
     username = username.lower().lstrip('@')
     if not os.path.exists(USERNAMES_FILE): return None
     with open(USERNAMES_FILE, "r", encoding="utf-8") as f:
@@ -90,22 +76,8 @@ def get_id_by_username(username: str):
                     return None
     return None
 
-def get_username_by_id(user_id: int) -> str:
-    """
-    Ищет @username по ID. Точное сравнение после последнего ':' —
-    чтобы user_id=234 не совпал с username:1234.
-    """
-    if not os.path.exists(USERNAMES_FILE): return "нет username"
-    target = str(user_id)
-    with open(USERNAMES_FILE, "r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if not line or ":" not in line:
-                continue
-            name, _, value = line.rpartition(":")
-            if value == target:
-                return f"@{name}"
-    return "нет username"
+async def get_username_by_id(user_id: int) -> str:
+    return await get_username_by_id_db(user_id)
 
 # ==============================================================================
 # ================= ОТВЕТЫ =====================================================
@@ -145,41 +117,19 @@ async def auto_save_replies():
 # ==============================================================================
 
 def load_log_ids():
-    global log_msg_ids
-    if os.path.exists(LOG_IDS_FILE):
-        try:
-            with open(LOG_IDS_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            log_msg_ids.clear()
-            log_msg_ids.update({int(k): int(v) for k, v in data.items()})
-        except Exception as e:
-            logging.error(f"Ошибка загрузки log_ids.json: {e}")
-            log_msg_ids.clear()
+    pass # Теперь данные в БД
 
 def mark_log_ids_dirty():
-    global log_ids_dirty
-    log_ids_dirty = True
+    pass
 
-def save_log_msg_id(channel_msg_id: int, log_msg_id: int):
-    log_msg_ids[int(channel_msg_id)] = int(log_msg_id)
-    mark_log_ids_dirty()
+async def save_log_msg_id(channel_msg_id: int, log_msg_id: int):
+    await save_log_id_db(channel_msg_id, log_msg_id)
 
-def get_log_msg_id(channel_msg_id: int):
-    return log_msg_ids.get(int(channel_msg_id))
+async def get_log_msg_id(channel_msg_id: int):
+    return await get_log_msg_id_db(channel_msg_id)
 
 async def auto_save_log_ids():
-    global log_ids_dirty
-    while True:
-        if log_ids_dirty:
-            try:
-                temp_file = LOG_IDS_FILE + ".tmp"
-                with open(temp_file, "w", encoding="utf-8") as f:
-                    json.dump(log_msg_ids, f)
-                os.replace(temp_file, LOG_IDS_FILE)
-                log_ids_dirty = False
-            except Exception as e:
-                logging.error(f"Ошибка сохранения log_ids.json: {e}")
-        await asyncio.sleep(5)
+    pass # Теперь данные в БД
 
 # ==============================================================================
 # ================= МУТЫ =======================================================
@@ -198,7 +148,6 @@ def load_muted():
             muted_users.clear()
 
 async def save_muted():
-    """Атомарно сохраняет базу мутов (async + Lock)."""
     async with muted_lock:
         try:
             temp_file = MUTED_FILE + ".tmp"
@@ -209,10 +158,6 @@ async def save_muted():
             logging.error(f"Ошибка сохранения muted.json: {e}")
 
 async def check_mute(user_id: int):
-    """
-    Проверяет мут. Async, т.к. может вызвать save_muted().
-    Возвращает оставшееся время в секундах или None.
-    """
     if user_id in muted_users:
         remaining = muted_users[user_id] - datetime.now().timestamp()
         if remaining > 0:
