@@ -2,11 +2,12 @@ import asyncio
 import logging
 import os
 from datetime import datetime
+from zoneinfo import ZoneInfo
 from aiogram import Router, F
 from aiogram.types import Message, FSInputFile, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
 from aiogram.filters import CommandStart, Command
 from aiogram.enums import ParseMode, ContentType
-from config import CHANNEL_ID, LOG_CHAT_ID, WELCOME_IMAGE, SCHEDULE_FILE, SCHEDULE2_FILE, LOG_FILE, ADMIN_IDS
+from config import CHANNEL_ID, LOG_CHAT_ID, WELCOME_IMAGE, SCHEDULE_FILE, SCHEDULE2_FILE, ADMIN_IDS
 from services.storage import (
     save_user, save_username, active_replies, mark_replies_dirty, check_mute,
     active_replies_lock, save_log_msg_id, get_log_msg_id
@@ -145,7 +146,7 @@ async def handle_all_messages(message: Message):
 
     user = message.from_user
     text = message.text or message.caption or ""
-    now = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
+    now = datetime.now(ZoneInfo("Asia/Novosibirsk")).strftime("%d.%m.%Y %H:%M:%S")
 
     # Админские !команды не публикуем в канал (их уже обработал admin_router или они неизвестны)
     if user.id in ADMIN_IDS and text.startswith("!"):
