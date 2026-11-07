@@ -1,12 +1,16 @@
 import os
+from dotenv import load_dotenv
 
 # ==============================================================================
 # ================= НАСТРОЙКИ БОТА (МЕНЯТЬ ТОЛЬКО ЗДЕСЬ) =======================
 # ==============================================================================
+# Загружаем переменные из файла .env (если он есть)
+load_dotenv()
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(BASE_DIR, "data")
 
+# Теперь токен подтянется либо из .env, либо из настроек Bothost
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 if not BOT_TOKEN:
     raise SystemExit(
