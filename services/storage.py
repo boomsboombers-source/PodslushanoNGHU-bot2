@@ -3,7 +3,7 @@ import json
 import logging
 import asyncio
 from datetime import datetime
-from config import USERS_FILE, USERNAMES_FILE, REPLIES_FILE, MUTED_FILE, DELAYED_FILE, LOG_IDS_FILE
+from config import USERS_FILE, REPLIES_FILE, MUTED_FILE, DELAYED_FILE
 from services.database import (
     save_username_db, get_username_by_id_db, 
     save_log_id_db, get_log_msg_id_db
