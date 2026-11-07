@@ -7,6 +7,9 @@
   !удалить_др — удалить свой ДР (все)
   !др_сегодня — кто празднует сегодня (админ)
   !др_список — все ДР (админ)
+  !др_добавить ID ДД.ММ — добавить/изменить ДР пользователя (админ)
+  !др_удалить ID — удалить ДР пользователя (админ)
+  !др_поиск ДД.ММ (или ММ) — поиск по дате/месяцу (админ)
 """
 
 import os
@@ -32,6 +35,9 @@ PLUGIN_INFO = {
         ("!удалить_др", "удалить свой ДР (все)"),
         ("!др_сегодня", "кто празднует сегодня (админ)"),
         ("!др_список", "все ДР (админ)"),
+        ("!др_добавить ID ДД.ММ", "добавить/изменить ДР (админ)"),
+        ("!др_удалить ID", "удалить ДР пользователя (админ)"),
+        ("!др_поиск ДД.ММ", "поиск по дате/месяцу (админ)"),
     ],
 }
 
@@ -150,6 +156,89 @@ async def bday_list(message: Message):
         except Exception:
             name = f"<code>{esc(uid)}</code>"
         lines.append(f"• <b>{dm}</b> — {name}")
+    await message.answer("\n".join(lines), parse_mode=ParseMode.HTML)
+
+
+@router.message(F.text.lower().startswith("!др_добавить"), F.from_user.id.in_(ADMIN_IDS))
+async def admin_add_birthday(message: Message):
+    parts = message.text.split(maxsplit=2)
+    if len(parts) < 3:
+        await message.answer(
+            "❌ Формат: <code>!др_добавить ID ДД.ММ</code>\n"
+            "Пример: <code>!др_добавить 123456789 15.03</code>",
+            parse_mode=ParseMode.HTML
+        )
+        return
+
+    target_id = parts[1]
+    dm = parse_dm(parts[2])
+
+    if not target_id.isdigit():
+        await message.answer("❌ ID должен быть числом.")
+        return
+    if not dm:
+        await message.answer("❌ Неверная дата. Формат: <code>ДД.ММ</code>", parse_mode=ParseMode.HTML)
+        return
+
+    birthdays[target_id] = dm
+    await save_birthdays()
+    
+    try:
+        chat = await message.bot.get_chat(int(target_id))
+        name = chat.full_name or "Участник"
+    except Exception:
+        name = f"ID {target_id}"
+
+    await message.answer(f"✅ ДР для <b>{esc(name)}</b> сохранен: <b>{dm}</b>", parse_mode=ParseMode.HTML)
+
+
+@router.message(F.text.lower().startswith("!др_удалить"), F.from_user.id.in_(ADMIN_IDS))
+async def admin_del_birthday(message: Message):
+    parts = message.text.split()
+    if len(parts) < 2:
+        await message.answer("❌ Формат: <code>!др_удалить ID</code>", parse_mode=ParseMode.HTML)
+        return
+
+    target_id = parts[1]
+    if target_id in birthdays:
+        birthdays.pop(target_id, None)
+        await save_birthdays()
+        await message.answer(f"✅ ДР пользователя <code>{target_id}</code> удален.", parse_mode=ParseMode.HTML)
+    else:
+        await message.answer(f"⚠️ Пользователь <code>{target_id}</code> не найден в базе ДР.", parse_mode=ParseMode.HTML)
+
+
+@router.message(F.text.lower().startswith("!др_поиск"), F.from_user.id.in_(ADMIN_IDS))
+async def admin_find_birthday(message: Message):
+    parts = message.text.split()
+    if len(parts) < 2:
+        await message.answer(
+            "❌ Формат: <code>!др_поиск ММ</code> (месяц) или <code>!др_поиск ДД.ММ</code> (конкретный день)",
+            parse_mode=ParseMode.HTML
+        )
+        return
+
+    query = parts[1]
+    found = []
+    
+    for uid, dm in birthdays.items():
+        if dm.endswith(query) or dm == query:
+            found.append((uid, dm))
+
+    if not found:
+        await message.answer(f"📅 По запросу <b>{query}</b> никого не найдено.", parse_mode=ParseMode.HTML)
+        return
+
+    lines = [f"🎂 <b>Результаты поиска ({query}):</b>"]
+    for uid, dm in sorted(found, key=lambda x: x[1]):
+        try:
+            chat = await message.bot.get_chat(int(uid))
+            name = chat.full_name or "Участник"
+            username = f" (@{chat.username})" if chat.username else ""
+            lines.append(f"• <b>{dm}</b> — {esc(name)}{esc(username)} (<code>{uid}</code>)")
+        except Exception:
+            lines.append(f"• <b>{dm}</b> — ID: <code>{uid}</code>")
+            
     await message.answer("\n".join(lines), parse_mode=ParseMode.HTML)
 
 
