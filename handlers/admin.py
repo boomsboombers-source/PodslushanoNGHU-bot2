@@ -57,7 +57,7 @@ async def _build_stats_text(is_admin: bool = False) -> str:
     muted_list = ""
     if muted_users:
         muted_list = "\n\n🔇 <b>Замученные:</b>\n"
-        for uid, until_ts in muted_users.items():
+        for uid, until_ts in list(muted_users.items()):
             remaining = int(until_ts - datetime.now().timestamp())
             
             if is_admin:
@@ -113,7 +113,8 @@ async def admin_menu_handler(callback: CallbackQuery):
         await callback.message.answer(text, parse_mode=ParseMode.HTML)
 
     elif action == "clear_replies":
-        active_replies.clear()
+        async with active_replies_lock:
+            active_replies.clear()
         mark_replies_dirty()
         await callback.message.answer("✅ Все ожидания ответов очищены.")
 
@@ -230,7 +231,8 @@ async def admin_stats_text(message: Message):
 
 @admin_router.message(F.text.startswith("!очистить_ответы"), F.from_user.id.in_(ADMIN_IDS))
 async def admin_clear_replies_text(message: Message):
-    active_replies.clear()
+    async with active_replies_lock:
+        active_replies.clear()
     mark_replies_dirty()
     await message.answer("✅ Очищено.")
 
@@ -327,10 +329,11 @@ async def add_button(message: Message):
 async def broadcast(message: Message):
     source = message.text or message.caption or ""
     clean_text = strip_command_prefix(source, "!рассылка")
-    if not clean_text and not message.photo and not message.video:
+    has_media = bool(message.photo or message.video or message.document or message.audio or message.voice or message.video_note or message.sticker or message.contact or message.location)
+    if not clean_text and not has_media:
         await message.answer("❌ Текст пуст.")
         return
-    users = get_all_users()
+    users = [uid for uid in get_all_users() if str(uid).isdigit()]
     await message.answer(f"🚀 Рассылка для {len(users)}...")
     success = 0
     for uid_str in users:
