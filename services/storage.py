@@ -22,6 +22,7 @@ user_file_lock = asyncio.Lock()
 usernames_file_lock = asyncio.Lock()
 muted_lock = asyncio.Lock()
 active_replies_lock = asyncio.Lock()
+delayed_posts_lock = asyncio.Lock()
 
 # ==============================================================================
 # ================= ПОЛЬЗОВАТЕЛИ ===============================================
@@ -92,15 +93,21 @@ def mark_replies_dirty():
 async def auto_save_replies():
     global replies_dirty
     while True:
-        if replies_dirty:
+        snapshot = None
+        async with active_replies_lock:
+            if replies_dirty:
+                snapshot = dict(active_replies)
+                replies_dirty = False
+        if snapshot is not None:
             try:
                 temp_file = REPLIES_FILE + ".tmp"
                 with open(temp_file, "w", encoding="utf-8") as f:
-                    json.dump(active_replies, f)
+                    json.dump(snapshot, f)
                 os.replace(temp_file, REPLIES_FILE)
-                replies_dirty = False
             except Exception as e:
                 logging.error(f"Ошибка сохранения replies.json: {e}")
+                async with active_replies_lock:
+                    replies_dirty = True
         await asyncio.sleep(5)
 
 # ==============================================================================
