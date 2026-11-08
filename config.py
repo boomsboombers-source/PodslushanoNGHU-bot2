@@ -20,7 +20,12 @@ if not BOT_TOKEN:
 
 CHANNEL_ID = -1002304148771
 LOG_CHAT_ID = -1004306176378
-ADMIN_IDS = [1088467220, 1690346204]
+
+ADMIN_IDS = [1088467220, 1690346204] # <-- ID АДМИНОВ
+MODERATOR_IDS = [5904499737, 1709229252] # <-- ID модераторов
+
+# Объединенный список для проверок (Админы + Модераторы)
+STAFF_IDS = ADMIN_IDS + MODERATOR_IDS
 
 WELCOME_IMAGE = os.path.join(BASE_DIR, "pictures", "Podslushano.png")
 
