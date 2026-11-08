@@ -455,7 +455,9 @@ async def moderator_settings(callback: CallbackQuery):
         "• <code>!др_добавить ID ДД.ММ</code> — добавить/изменить ДР.\n"
         "• <code>!др_сегодня</code> — кто празднует сегодня.\n"
         "• <code>!др_список</code> — все ДР.\n"
-        "• <code>!др_поиск ДД.ММ</code> — поиск по дате/месяцу.",
+        "• <code>!др_поиск ДД.ММ</code> — поиск по дате/месяцу.\n\n"
+        "🎨 <b>Конкурс</b>\n"
+        "• <code>!конкурс_статус</code> — краткий статус конкурса (если он идет).",
         parse_mode=ParseMode.HTML
     )
     await callback.answer()
