@@ -37,24 +37,22 @@ async def delayed_poster(bot):
     while True:
         try:
             now_ts = datetime.now(ZoneInfo("Asia/Novosibirsk")).timestamp()
-            to_remove_idx = []
-            for idx, post in enumerate(list(delayed_posts)):
+            to_remove_ids = set()
+            for post in list(delayed_posts):
                 try:
                     if post.get("time", float("inf")) <= now_ts:
                         await send_delayed_post(bot, post)
-                        to_remove_idx.append(idx)
+                        to_remove_ids.add(id(post))
                 except Exception as e:
                     logging.error(f"Ошибка при отправке отложенного поста: {e}")
                     try:
                         await bot.send_message(LOG_CHAT_ID, f"⚠️ <b>Ошибка отложенного поста!</b>\nТип: {post.get('type')}\nОшибка: {e}\nПост удален из очереди.", parse_mode=ParseMode.HTML)
                     except Exception:
                         pass
-                    to_remove_idx.append(idx)
+                    to_remove_ids.add(id(post))
 
-            if to_remove_idx:
-                for idx in sorted(to_remove_idx, reverse=True):
-                    if 0 <= idx < len(delayed_posts):
-                        del delayed_posts[idx]
+            if to_remove_ids:
+                delayed_posts[:] = [p for p in delayed_posts if id(p) not in to_remove_ids]
                 with open(DELAYED_FILE, "w", encoding="utf-8") as f:
                     json.dump(delayed_posts, f)
         except Exception as e:
@@ -65,7 +63,7 @@ async def cleanup_muted():
     while True:
         try:
             now_ts = datetime.now().timestamp()
-            expired = [uid for uid, until in muted_users.items() if until < now_ts]
+            expired = [uid for uid, until in list(muted_users.items()) if until < now_ts]
             if expired:
                 for uid in expired:
                     muted_users.pop(uid, None)
