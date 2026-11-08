@@ -80,7 +80,6 @@ async def cmd_start(message: Message):
         await message.answer("👋 Привет! Бот работает.", reply_markup=get_main_keyboard())
 
 @user_router.message(F.text == "📅 Расписание репетиций")
-@user_router.message(Command("schedule"))
 async def show_schedule(message: Message):
     if not os.path.exists(SCHEDULE_FILE):
         await message.answer("❌ Расписание репетиций не загружено.")
