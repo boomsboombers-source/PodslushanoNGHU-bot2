@@ -25,6 +25,7 @@ from services.storage import (
 from services.media import _send_media_with_caption, esc
 from services.text import strip_command_prefix, strip_command_and_target
 from services import plugin_registry
+from services.database import get_user_info_db, get_top_users_db
 
 admin_router = Router()
 
@@ -398,3 +399,67 @@ async def private_message(message: Message):
         await message.answer("✅ Отправлено.")
     except Exception:
         await message.answer("❌ Ошибка отправки.")
+
+@admin_router.message(F.text.lower().startswith("!кто"), F.from_user.id.in_(ADMIN_IDS))
+async def admin_who_is(message: Message):
+    parts = message.text.split()
+    if len(parts) < 2:
+        await message.answer("❌ Формат: <code>!кто ID_или_@username</code>", parse_mode=ParseMode.HTML)
+        return
+
+    target = parts[1]
+    target_id = None
+
+    # Если ввели @username, ищем ID
+    if target.startswith("@") or not target.isdigit():
+        target_id = await get_id_by_username(target.lstrip("@"))
+        if not target_id:
+            await message.answer("❌ Пользователь с таким юзернеймом не найден в базе.")
+            return
+    else:
+        target_id = int(target)
+
+    # Достаем инфу из базы
+    info = await get_user_info_db(target_id)
+    
+    # Пытаемся достать имя из Телеграма (если он есть в кэше бота)
+    try:
+        chat = await message.bot.get_chat(target_id)
+        name = chat.full_name or "Неизвестно"
+    except Exception:
+        name = "Не удалось получить имя (не писал боту)"
+
+    text = (
+        f"🕵️ <b>Информация о пользователе</b>\n\n"
+        f"🆔 <b>ID:</b> <code>{target_id}</code>\n"
+        f"👤 <b>Имя:</b> {esc(name)}\n"
+        f"🔗 <b>Юзернейм:</b> {info['username']}\n"
+        f"💬 <b>Сообщений в базе:</b> {info['messages']}\n"
+        f"🔇 <b>В муте:</b> {'Да' if target_id in muted_users else 'Нет'}"
+    )
+    await message.answer(text, parse_mode=ParseMode.HTML)
+
+
+@admin_router.message(F.text.lower() == "!топ", F.from_user.id.in_(ADMIN_IDS))
+async def admin_top_users(message: Message):
+    top = await get_top_users_db(limit=5)
+    if not top:
+        await message.answer("📊 В базе пока нет сообщений от пользователей.")
+        return
+
+    lines = ["🏆 <b>Топ-5 самых активных анонимщиков:</b>\n"]
+    
+    for i, item in enumerate(top, 1):
+        uid = item["user_id"]
+        count = item["count"]
+        
+        # Достаем имя (из кэша ТГ или из базы)
+        try:
+            chat = await message.bot.get_chat(uid)
+            name = chat.full_name or "Без имени"
+        except Exception:
+            name = "Скрытый профиль"
+            
+        lines.append(f"{i}. {esc(name)} (<code>{uid}</code>) — <b>{count}</b> сообщений")
+        
+    await message.answer("\n".join(lines), parse_mode=ParseMode.HTML)
