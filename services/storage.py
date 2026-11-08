@@ -6,7 +6,7 @@ from datetime import datetime
 from config import USERS_FILE, REPLIES_FILE, MUTED_FILE, DELAYED_FILE
 from services.database import (
     save_username_db, get_username_by_id_db, 
-    save_log_id_db, get_log_msg_id_db
+    save_log_id_db, get_log_msg_id_db, get_user_id_by_username_db
 )
 
 # --- ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ (ХРАНИЛИЩА) ---
@@ -65,16 +65,7 @@ async def save_username(username, user_id: int):
     await save_username_db(user_id, username)
 
 async def get_id_by_username(username: str):
-    username = username.lower().lstrip('@')
-    if not os.path.exists(USERNAMES_FILE): return None
-    with open(USERNAMES_FILE, "r", encoding="utf-8") as f:
-        for line in f:
-            if line.startswith(f"{username}:"):
-                try:
-                    return int(line.split(":", 1)[1])
-                except (IndexError, ValueError):
-                    return None
-    return None
+    return await get_user_id_by_username_db(username)
 
 async def get_username_by_id(user_id: int) -> str:
     return await get_username_by_id_db(user_id)
