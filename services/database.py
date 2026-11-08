@@ -89,7 +89,7 @@ async def get_user_info_db(user_id: int) -> dict:
         
     return {"username": username, "messages": msg_count}
 
-async def get_top_users_db(limit: int = 5) -> list[dict]:
+async def get_top_users_db(limit: int = 10) -> list[dict]:
     """Возвращает топ юзеров по кол-ву сообщений."""
     top = []
     async with db.execute(
@@ -99,3 +99,10 @@ async def get_top_users_db(limit: int = 5) -> list[dict]:
         async for row in cursor:
             top.append({"user_id": row[0], "count": row[1]})
     return top
+
+async def get_user_id_by_username_db(username: str):
+    """Ищет user_id по username в базе."""
+    username = username.lower().lstrip('@')
+    async with db.execute("SELECT user_id FROM usernames WHERE username = ?", (username,)) as cursor:
+        row = await cursor.fetchone()
+        return row[0] if row else None
