@@ -81,6 +81,20 @@ def parse_poll(text: str):
     return question, options
 
 
+@router.message(F.text.lower() == "!опросы", F.from_user.id.in_(ADMIN_IDS))
+async def list_polls(message: Message):
+    if not polls:
+        await message.answer("ℹ️ Опросов нет.")
+        return
+    status_map = {"pending": "⏳", "approved": "✅", "rejected": "❌"}
+    lines = ["📊 <b>Все опросы:</b>"]
+    for pid, p in polls.items():
+        st = status_map.get(p.get("status"), "?")
+        lines.append(f"{st} <code>{pid}</code> — {p.get('question')}")
+    await message.answer("\n".join(lines), parse_mode=ParseMode.HTML)
+
+
+
 @router.message(F.text.lower().startswith("!опрос"), F.chat.type == "private")
 async def suggest_poll(message: Message):
     global _poll_counter
@@ -140,19 +154,6 @@ async def my_polls(message: Message):
     for pid, p in mine:
         st = status_map.get(p.get("status"), p.get("status"))
         lines.append(f"• <code>{pid}</code> — {st} — {p.get('question')}")
-    await message.answer("\n".join(lines), parse_mode=ParseMode.HTML)
-
-
-@router.message(F.text.lower() == "!опросы", F.from_user.id.in_(ADMIN_IDS))
-async def list_polls(message: Message):
-    if not polls:
-        await message.answer("ℹ️ Опросов нет.")
-        return
-    status_map = {"pending": "⏳", "approved": "✅", "rejected": "❌"}
-    lines = ["📊 <b>Все опросы:</b>"]
-    for pid, p in polls.items():
-        st = status_map.get(p.get("status"), "?")
-        lines.append(f"{st} <code>{pid}</code> — {p.get('question')}")
     await message.answer("\n".join(lines), parse_mode=ParseMode.HTML)
 
 
