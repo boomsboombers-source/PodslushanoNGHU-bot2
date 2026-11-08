@@ -13,7 +13,7 @@ from services.storage import (
     active_replies_lock, save_log_msg_id, get_log_msg_id
 )
 from services.media import _send_media_with_caption, esc
-from services.database import log_message_db
+from services.database import log_message_db, get_username_by_id_db
 
 user_router = Router()
 
@@ -27,6 +27,14 @@ def get_main_keyboard():
         resize_keyboard=True, is_persistent=True,
         input_field_placeholder="Напиши сообщение для канала..."
     )
+
+async def get_signed_signature(user) -> str:
+    """Формирует подпись автора для неанонимных сообщений."""
+    username = await get_username_by_id_db(user.id)
+    signature = f"\n\n👤 <b>Автор:</b> {esc(user.full_name)}"
+    if username != "нет username":
+        signature += f" (@{esc(username.lstrip('@'))})"
+    return signature + "\n"
 
 @user_router.message(CommandStart())
 async def cmd_start(message: Message):
@@ -75,12 +83,12 @@ async def cmd_start(message: Message):
 @user_router.message(Command("schedule"))
 async def show_schedule(message: Message):
     if not os.path.exists(SCHEDULE_FILE):
-        await message.answer("❌ Расписание не загружено.")
+        await message.answer("❌ Расписание репетиций не загружено.")
         return
     with open(SCHEDULE_FILE, "r", encoding="utf-8") as f:
         photo_id = f.read().strip()
     if not photo_id:
-        await message.answer("❌ Расписание не загружено.")
+        await message.answer("❌ Расписание репетиций не загружено.")
         return
     try:
         await message.bot.send_photo(message.from_user.id, photo=photo_id, caption="📅 <b>Расписание репетиций</b>", parse_mode=ParseMode.HTML)
@@ -120,6 +128,8 @@ async def show_commands(message: Message):
         "• <code>!мои_опросы</code> — статус твоих опросов.\n\n"
         "🏅 <b>Конкурс (если в данный момент идет)</b>\n"
         "• <code>!конкурс (в описании к фотографии)</code> — отправить свою фотографию на конкурс аватарок канала или бота.\n\n"
+        "👤 <b>Неанонимный пост</b>\n"
+        "• <code>!неанон [текст]</code> — отправить пост с указанием вашего имени.\n\n"
         "💬 <b>Анонимные ответы</b>\n"
         "Под каждым постом в канале есть кнопка <b>«Ответить»</b>. Нажми, чтобы написать анонимный ответ (можно с фото или стикерами).\n\n"
         "⚠️ <i>Соблюдай правила приличия и не спамь.</i>",
@@ -148,7 +158,25 @@ async def handle_all_messages(message: Message):
     text = message.text or message.caption or ""
     now = datetime.now(ZoneInfo("Asia/Novosibirsk")).strftime("%d.%m.%Y %H:%M:%S")
 
-    # Админские !команды не публикуем в канал (их уже обработал admin_router или они неизвестны)
+    # --- ПРОВЕРКА НА НЕАНОНИМНОЕ СООБЩЕНИЕ ---
+    is_signed = False
+    if text.lower().startswith("!неанон"):
+        is_signed = True
+        text = text[len("!неанон"):].strip()
+    elif text.lower().startswith("!неаноним"):
+        is_signed = True
+        text = text[len("!неаноним"):].strip()
+
+    # Проверка на пустоту после команды !неанон
+    if is_signed and not text and not message.photo and not message.video and not message.document and not message.audio and not message.voice and not message.video_note and not message.sticker:
+        await message.answer(
+            "❌ Вы написали команду <code>!неанон</code>, но не прикрепили ни текста, ни медиа.\n"
+            "Напишите текст после команды (например: <code>!неанон Привет</code>) или прикрепите фото с этой командой в подписи.",
+            parse_mode=ParseMode.HTML
+        )
+        return
+
+    # Админские !команды не публикуем в канал
     if user.id in ADMIN_IDS and text.startswith("!"):
         return
 
@@ -167,7 +195,13 @@ async def handle_all_messages(message: Message):
     if original_msg_id is not None:
         mark_replies_dirty()
 
-        reply_caption = f"{esc(text)}\n\n📬 @PodslushanoNGHU_bot" if text else "📬 @PodslushanoNGHU_bot"
+        base_caption = esc(text) if text else ""
+        if is_signed:
+            base_caption += await get_signed_signature(user)
+            reply_caption = base_caption + "📬 @PodslushanoNGHU_bot"
+        else:
+            reply_caption = (base_caption + "\n\n📬 @PodslushanoNGHU_bot") if base_caption else "📬 @PodslushanoNGHU_bot"
+
         answer_kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="💬 Ответить", callback_data="reply_to_post"), InlineKeyboardButton(text="📩 Новое сообщение", url="https://t.me/PodslushanoNGHU_bot?start=new")]])
 
         try:
@@ -180,7 +214,9 @@ async def handle_all_messages(message: Message):
             reply_link = f"https://t.me/c/{chat_id_str}/{sent_reply.message_id}"
 
             log_kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔗 Перейти", url=reply_link)], [InlineKeyboardButton(text="🗑 Удалить", callback_data=f"delete_msg_{sent_reply.message_id}")], [InlineKeyboardButton(text="⚠️ Мут", callback_data=f"mute_menu_{user.id}")]])
-            log_text = f"💬 <b>Ответ</b>\n👤 <b>Автор:</b> {esc(user.full_name)}\n🔗 Username: @{esc(user.username) if user.username else 'нет'}\n🆔 ID: <code>{user.id}</code>\n🕒 Время: {now}\n📝 <b>Текст/Подпись:</b> {esc(text)}"
+            
+            sign_mark = " 👤" if is_signed else ""
+            log_text = f"💬 <b>Ответ</b>{sign_mark}\n👤 <b>Автор:</b> {esc(user.full_name)}\n🔗 Username: @{esc(user.username) if user.username else 'нет'}\n🆔 ID: <code>{user.id}</code>\n🕒 Время: {now}\n📝 <b>Текст/Подпись:</b> {esc(text)}"
 
             # Лог ответа — реплай на лог исходного сообщения (если известен)
             reply_to_log_id = await get_log_msg_id(original_msg_id)
@@ -199,7 +235,7 @@ async def handle_all_messages(message: Message):
             await log_message_db(user.id, now, "reply", text)
 
             channel_kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="📢 Перейти к сообщению", url=reply_link)]])
-            await message.answer("✅ Твой анонимный ответ опубликован в канале!", reply_markup=channel_kb)
+            await message.answer("✅ Твой ответ опубликован в канале!", reply_markup=channel_kb)
         except Exception as e:
             logging.error(f"Ошибка ответа: {e}")
             await message.answer("❌ Не удалось отправить ответ. Возможно, пост удален.")
@@ -210,9 +246,14 @@ async def handle_all_messages(message: Message):
         return
 
     # Публикация в канал
-    signature = "\n\n📬 @PodslushanoNGHU_bot"
     reply_kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="💬 Ответить", callback_data="reply_to_post"), InlineKeyboardButton(text="📩 Новое сообщение", url="https://t.me/PodslushanoNGHU_bot?start=new")]])
-    caption_out = (esc(text) + signature) if text else ""
+    
+    base_caption = esc(text) if text else ""
+    if is_signed:
+        base_caption += await get_signed_signature(user)
+        caption_out = base_caption + "📬 @PodslushanoNGHU_bot"
+    else:
+        caption_out = (base_caption + "\n\n📬 @PodslushanoNGHU_bot") if base_caption else "📬 @PodslushanoNGHU_bot"
 
     try:
         sent_msg = await _send_media_with_caption(message.bot, CHANNEL_ID, message, caption=caption_out, parse_mode=ParseMode.HTML)
@@ -229,7 +270,8 @@ async def handle_all_messages(message: Message):
     log_kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔗 Перейти к сообщению", url=msg_link)], [InlineKeyboardButton(text="🗑 Удалить", callback_data=f"delete_msg_{sent_msg.message_id}")], [InlineKeyboardButton(text="⚠️ Мут", callback_data=f"mute_menu_{user.id}")]])
 
     username = f"@{user.username}" if user.username else "нет username"
-    log_text = f"👤 <b>Автор:</b> {esc(user.full_name)}\n🔗 Username: {esc(username)}\n🆔 ID: <code>{user.id}</code>\n🕒 Время: {now}\n💬 <b>Тип:</b> {message.content_type}\n📝 <b>Текст/Подпись:</b> {esc(text)}"
+    sign_mark = " 👤" if is_signed else ""
+    log_text = f"👤 <b>Автор:</b> {esc(user.full_name)}{sign_mark}\n🔗 Username: {esc(username)}\n🆔 ID: <code>{user.id}</code>\n🕒 Время: {now}\n💬 <b>Тип:</b> {message.content_type}\n📝 <b>Текст/Подпись:</b> {esc(text)}"
 
     # Новый пост — лог без реплая, но сохраняем связь для будущих ответов
     try:
@@ -241,7 +283,8 @@ async def handle_all_messages(message: Message):
     await log_message_db(user.id, now, message.content_type, text)
 
     channel_kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="📢 Перейти к сообщению", url=msg_link)]])
-    await message.answer("✅ Сообщение отправлено в канал анонимно.", reply_markup=channel_kb)
+    answer_text = "✅ Неанонимное сообщение отправлено в канал." if is_signed else "✅ Сообщение отправлено в канал анонимно."
+    await message.answer(answer_text, reply_markup=channel_kb)
 
 @user_router.message()
 async def handle_other_messages(message: Message):
