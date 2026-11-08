@@ -180,6 +180,9 @@ async def admin_menu_handler(callback: CallbackQuery):
             "📊 <b>Статистика и очистка</b>\n"
             "• <code>!статистика</code> — общая статистика.\n"
             "• <code>!очистить_ответы</code> — сброс ожиданий.\n\n"
+            "🕵️ <b>Аналитика (по базе данных)</b>\n"
+            "• <code>!кто [ID|@username]</code> — узнать инфу о пользователе (сколько сообщений отправил, в муте ли он).\n"
+            "• <code>!топ</code> — топ-10 самых активных анонимщиков за всё время.\n\n"
             "🔌 <b>Плагины</b>\n"
             "• Кнопка «🔌 Плагины» в админ-панели — список подключённых плагинов и их команд.",
             parse_mode=ParseMode.HTML
@@ -442,12 +445,12 @@ async def admin_who_is(message: Message):
 
 @admin_router.message(F.text.lower() == "!топ", F.from_user.id.in_(ADMIN_IDS))
 async def admin_top_users(message: Message):
-    top = await get_top_users_db(limit=5)
+    top = await get_top_users_db(limit=10)
     if not top:
         await message.answer("📊 В базе пока нет сообщений от пользователей.")
         return
 
-    lines = ["🏆 <b>Топ-5 самых активных анонимщиков:</b>\n"]
+    lines = ["🏆 <b>Топ-10 самых активных анонимщиков:</b>\n"]
     
     for i, item in enumerate(top, 1):
         uid = item["user_id"]
