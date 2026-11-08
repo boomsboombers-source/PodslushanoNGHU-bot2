@@ -1,659 +1,523 @@
-# plugins/contest.py
-"""
-Плагин «Конкурс аватарок ТГК».
-Команды:
-  !начать_конкурс    — запустить конкурс (админ)
-  !завершить_конкурс — завершить приём и опубликовать работы (админ)
-  !дополнить_вариант — добавить работу в идущее голосование (админ, фото/документ с подписью)
-  !результаты        — опубликовать результаты в канал (админ)
-  !конкурс_статус    — краткий статус конкурса (админ, модератор)
-  !конкурс_сброс     — полный сброс состояния конкурса (админ, с подтверждением)
-  !конкурс           — отправить фото на конкурс (все)
-"""
-
 import os
 import json
 import logging
 import asyncio
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
+
+import aiosqlite
 
 from aiogram import Router, F
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.filters import Command
 from aiogram.enums import ParseMode
 from aiogram.exceptions import TelegramBadRequest
 
-from config import CHANNEL_ID, LOG_CHAT_ID, ADMIN_IDS, MODERATOR_IDS, DATA_DIR
+from config import (
+    CHANNEL_ID, LOG_CHAT_ID, ADMIN_IDS, MODERATOR_IDS,
+    SCHEDULE_FILE, SCHEDULE2_FILE, DELAYED_FILE, DATA_DIR
+)
+from services.storage import (
+    cached_users, active_replies, mark_replies_dirty, save_user, save_username,
+    serialize_message, delayed_posts, get_all_users, get_id_by_username,
+    get_username_by_id, muted_users, active_replies_lock
+)
+from services.media import _send_media_with_caption, esc
+from services.text import strip_command_prefix, strip_command_and_target
+from services import plugin_registry
+from services.database import get_user_info_db, get_top_users_db
+
+admin_router = Router()
+
+DB_PATH = os.path.join(DATA_DIR, "bot.db")
 
 # ==============================================================================
-# ================= МЕТАДАННЫЕ ДЛЯ МЕНЮ «🔌 ПЛАГИНЫ» ===========================
+# ================= ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ====================================
 # ==============================================================================
 
-PLUGIN_INFO = {
-    "name": "Конкурс аватарок ТГК",
-    "description": "Конкурс на новую аватарку канала с голосованием и сменой голоса",
-    "commands": [
-        ("!начать_конкурс", "запустить конкурс (админ; добавьте «бот» для аватарки бота)"),
-        ("!завершить_конкурс", "завершить приём и опубликовать работы (админ)"),
-        ("!дополнить_вариант", "добавить работу в идущее голосование (админ)"),
-        ("!результаты", "опубликовать результаты в канал (админ)"),
-        ("!конкурс_статус", "краткий статус конкурса (админ, модератор)"),
-        ("!конкурс_сброс", "полный сброс состояния конкурса (админ)"),
-        ("!конкурс", "отправить фото на конкурс (все)"),
-    ],
-}
-
-# ==============================================================================
-# ================= РОУТЕР =====================================================
-# ==============================================================================
-
-router = Router(name="contest")
-
-# ==============================================================================
-# ================= ХРАНИЛИЩЕ ==================================================
-# ==============================================================================
-
-CONTEST_DIR = os.path.join(DATA_DIR, "contest")
-CONTEST_VOTES_FILE = os.path.join(CONTEST_DIR, "votes.json")
-CONTEST_ACTIVE_FILE = os.path.join(CONTEST_DIR, "active.json")
-CONTEST_REJECTED_FILE = os.path.join(CONTEST_DIR, "rejected.json")
-
-os.makedirs(CONTEST_DIR, exist_ok=True)
-
-contest_entries = {}      # {user_id_str: {"file_id": str, "number": int, "message_id": int, "type": "photo"|"document"}}
-contest_votes = {}        # {voter_id_str: variant_number}
-contest_is_active = False
-rejected_entries = set()  # {user_id_str, ...}
-results_published = False
-contest_target = "channel"  # "channel" или "bot"
-
-contest_file_lock = asyncio.Lock()
-pending_reset = set()     # {admin_id, ...} — кто нажал «Сброс», ждём подтверждения
-
-
-def load_contest_data():
-    global contest_entries, contest_votes, contest_is_active, rejected_entries, results_published, contest_target
+async def _get_stats_from_db() -> tuple[int, int]:
+    """Возвращает (всего сообщений, сообщений сегодня)."""
+    today_str = datetime.now(ZoneInfo("Asia/Novosibirsk")).strftime("%d.%m.%Y")
     try:
-        if os.path.exists(CONTEST_VOTES_FILE):
-            with open(CONTEST_VOTES_FILE, "r", encoding="utf-8") as f:
-                contest_votes = json.load(f)
-        if os.path.exists(CONTEST_REJECTED_FILE):
-            with open(CONTEST_REJECTED_FILE, "r", encoding="utf-8") as f:
-                rejected_entries = set(json.load(f))
-        if os.path.exists(CONTEST_ACTIVE_FILE):
-            with open(CONTEST_ACTIVE_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                contest_is_active = data.get("active", False)
-                contest_entries = data.get("entries", {})
-                results_published = data.get("results_published", False)
-                contest_target = data.get("target", "channel")
+        async with aiosqlite.connect(DB_PATH) as db:
+            async with db.execute("SELECT COUNT(*) FROM messages") as cur:
+                total = (await cur.fetchone())[0]
+            
+            async with db.execute("SELECT COUNT(*) FROM messages WHERE date LIKE ?", (f"{today_str}%",)) as cur:
+                today = (await cur.fetchone())[0]
+        return total, today
     except Exception as e:
-        logging.error(f"Ошибка загрузки данных конкурса: {e}")
+        logging.error(f"Ошибка чтения статистики из БД: {e}")
+        return 0, 0
 
+async def _build_stats_text(is_admin: bool = False) -> str:
+    """Собирает текст статистики. Если is_admin=False, скрывает юзернеймы."""
+    total_msgs, today_msgs = await _get_stats_from_db()
 
-async def save_contest_data():
-    async with contest_file_lock:
-        try:
-            with open(CONTEST_VOTES_FILE + ".tmp", "w", encoding="utf-8") as f:
-                json.dump(contest_votes, f)
-            os.replace(CONTEST_VOTES_FILE + ".tmp", CONTEST_VOTES_FILE)
-
-            with open(CONTEST_ACTIVE_FILE + ".tmp", "w", encoding="utf-8") as f:
-                json.dump({
-                    "active": contest_is_active,
-                    "entries": contest_entries,
-                    "results_published": results_published,
-                    "target": contest_target,
-                }, f)
-            os.replace(CONTEST_ACTIVE_FILE + ".tmp", CONTEST_ACTIVE_FILE)
-
-            with open(CONTEST_REJECTED_FILE + ".tmp", "w", encoding="utf-8") as f:
-                json.dump(list(rejected_entries), f)
-            os.replace(CONTEST_REJECTED_FILE + ".tmp", CONTEST_REJECTED_FILE)
-        except Exception as e:
-            logging.error(f"Ошибка сохранения данных конкурса: {e}")
-
-
-load_contest_data()
-
-
-# ==============================================================================
-# ================= ВСПОМОГАТЕЛЬНОЕ ============================================
-# ==============================================================================
-
-def _max_number() -> int:
-    """Максимальный номер среди уже присвоенных вариантов."""
-    nums = [e.get("number", 0) for e in contest_entries.values()]
-    return max(nums) if nums else 0
-
-
-def _variant_exists(variant_num: int) -> bool:
-    """Существует ли вариант с таким номером среди неотклонённых."""
-    for uid, e in contest_entries.items():
-        if uid in rejected_entries:
-            continue
-        if e.get("number") == variant_num:
-            return True
-    return False
-
-
-def _vote_kb(variant_num: int) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=f"🗳 Голосовать за вариант {variant_num}", callback_data=f"vote_{variant_num}")],
-        [InlineKeyboardButton(text="🔁 Изменить голос", callback_data="change_vote")],
-    ])
-
-
-async def _publish_entry(bot, entry: dict, variant_num: int) -> bool:
-    """Публикует работу в канал с кнопками. Возвращает True при успехе."""
-    caption = f"🎨 <b>Вариант {variant_num}</b>\nГолосуйте за эту работу!"
-    try:
-        if entry.get("type") == "document":
-            sent = await bot.send_document(
-                CHANNEL_ID, document=entry["file_id"],
-                caption=caption, reply_markup=_vote_kb(variant_num),
-                parse_mode=ParseMode.HTML
-            )
-        else:
-            sent = await bot.send_photo(
-                CHANNEL_ID, photo=entry["file_id"],
-                caption=caption, reply_markup=_vote_kb(variant_num),
-                parse_mode=ParseMode.HTML
-            )
-        entry["message_id"] = sent.message_id
-        return True
-    except Exception as e:
-        logging.error(f"Ошибка публикации варианта {variant_num}: {e}")
-        return False
-
-
-# ==============================================================================
-# ================= КОМАНДЫ АДМИНА =============================================
-# ==============================================================================
-
-@router.message(F.text.lower().startswith("!начать_конкурс"), F.from_user.id.in_(ADMIN_IDS))
-async def start_contest(message: Message):
-    global contest_is_active, contest_entries, contest_votes, rejected_entries, results_published, contest_target
-
-    if contest_is_active:
-        await message.answer("⚠️ Конкурс уже запущен! Сначала завершите текущий (!завершить_конкурс).")
-        return
-
-    # Цель конкурса: канал (по умолчанию) или аватарка бота
-    raw = (message.text or "").lower()
-    body = raw[len("!начать_конкурс"):].strip()
-    if body in ("бот", "бота", "bot", "tg", "telegram"):
-        contest_target = "bot"
-    else:
-        contest_target = "channel"
-
-    # Удаляем старые посты вариантов из канала (если есть message_id)
-    old_msg_ids = [e.get("message_id") for e in contest_entries.values() if e.get("message_id")]
-    for mid in old_msg_ids:
-        try:
-            await message.bot.delete_message(CHANNEL_ID, mid)
-        except Exception:
-            pass
-
-    contest_is_active = True
-    contest_entries = {}
-    contest_votes = {}
-    rejected_entries = set()
-    results_published = False
-    await save_contest_data()
-
-    target_word = "БОТА" if contest_target == "bot" else "КАНАЛА"
-    await message.bot.send_message(
-        CHANNEL_ID,
-        f"🎨 <b>КОНКУРС НА НОВУЮ АВАТАРКУ {target_word}!</b>\n\n"
-        "Присылайте свои варианты картинок <b>боту в личные сообщения</b>.\n"
-        "В подписи к фото обязательно напишите <b>!конкурс</b>.\n\n"
-        "📜 <b>Основные правила:</b>\n"
-        "1. Аватарка должна быть хотя бы косвенно связана с училищем.\n"
-        "2. Фотографии эротического и порнографического характера запрещены.\n\n"
-        "🏆 Лучший вариант станет новой аватаркой нашего " + ("бота!" if contest_target == "bot" else "канала!") + "\n\n"
-        "⏳ Прием заявок открыт. Ждем именно твой креатив!",
-        parse_mode=ParseMode.HTML
-    )
-    await message.answer(f"✅ Конкурс запущен! Цель: {'аватарка бота' if contest_target == 'bot' else 'аватарка канала'}. Участники могут присылать картинки с пометкой !конкурс.")
-
-
-@router.message(F.text.lower().startswith("!завершить_конкурс"), F.from_user.id.in_(ADMIN_IDS))
-async def end_contest(message: Message):
-    global contest_is_active, results_published
-
-    if not contest_is_active:
-        await message.answer("⚠️ Конкурс не запущен.")
-        return
-    if not contest_entries:
-        await message.answer("⚠️ Никто не прислал ни одной работы. Конкурс отменен.")
-        contest_is_active = False
-        await save_contest_data()
-        return
-
-    contest_is_active = False
-    results_published = False
-    await save_contest_data()
-
-    await message.answer(f"🏁 Прием заявок завершен! Найдено работ: {len(contest_entries)}. Начинаю публикацию...")
-
-    variant_num = 0
-    published_count = 0
-    for user_id, entry in contest_entries.items():
-        if user_id in rejected_entries:
-            continue
-        variant_num += 1
-        entry["number"] = variant_num
-        if await _publish_entry(message.bot, entry, variant_num):
-            published_count += 1
-        else:
-            await message.answer(f"⚠️ Не удалось опубликовать вариант {variant_num}.")
-        await asyncio.sleep(1.0)
-
-    await save_contest_data()
-
-    if published_count == 0:
-        await message.answer("⚠️ Все работы были отклонены или не опубликованы. Публиковать нечего.")
-    else:
-        await message.answer(f"✅ Опубликовано {published_count} работ. Теперь участники могут голосовать!")
-
-
-@router.message((F.photo | F.document) & F.caption.lower().startswith("!дополнить_вариант"), F.from_user.id.in_(ADMIN_IDS))
-async def add_late_entry(message: Message):
-    """Добавляет работу в идущее голосование (после !завершить_конкурс, до !результаты)."""
-    global contest_entries
-
-    if contest_is_active:
-        await message.answer("⚠️ Приём ещё идёт. Работа добавится при !завершить_конкурс, отдельная команда не нужна.")
-        return
-    if results_published:
-        await message.answer("⚠️ Результаты уже опубликованы. Добавлять работы поздно.")
-        return
-    if not contest_entries:
-        await message.answer("⚠️ Нет ни одной работы. Сначала запустите и завершите конкурс.")
-        return
-
-    # Определяем file_id и тип
-    if message.photo:
-        file_id = message.photo[-1].file_id
-        entry_type = "photo"
-    else:
-        doc = message.document
-        if not doc.mime_type or not doc.mime_type.startswith("image/"):
-            await message.answer("⚠️ Нужна картинка (jpg, png и т.д.).")
-            return
-        file_id = doc.file_id
-        entry_type = "document"
-
-    # user_id — из подписи: !дополнить_вариант <id>, иначе id админа
-    parts = (message.caption or "").split(maxsplit=2)
-    if len(parts) >= 2 and parts[1].isdigit():
-        user_id = parts[1]
-    else:
-        user_id = str(message.from_user.id)
-
-    if user_id in contest_entries:
-        await message.answer(f"⚠️ У пользователя {user_id} уже есть работа. Если нужно заменить — сначала отклоните старую.")
-        return
-
-    new_number = _max_number() + 1
-    contest_entries[user_id] = {
-        "file_id": file_id,
-        "number": new_number,
-        "type": entry_type,
-    }
-
-    if await _publish_entry(message.bot, contest_entries[user_id], new_number):
-        await save_contest_data()
-        await message.answer(f"✅ Вариант {new_number} добавлен в голосование (user_id: {user_id}).")
-    else:
-        contest_entries.pop(user_id, None)
-        await message.answer("❌ Не удалось опубликовать вариант.")
-
-
-@router.message(F.text.lower().startswith("!результаты"), F.from_user.id.in_(ADMIN_IDS))
-async def contest_results(message: Message):
-    global results_published
-
-    if contest_is_active:
-        await message.answer("⚠️ Конкурс ещё идёт. Сначала !завершить_конкурс.")
-        return
-    if not contest_votes:
-        await message.answer("⚠️ Голосов пока нет.")
-        return
-
-    results = {}
-    for variant in contest_votes.values():
-        results[variant] = results.get(variant, 0) + 1
-
-    sorted_results = sorted(results.items(), key=lambda x: x[1], reverse=True)
-    top3 = sorted_results[:3]
-    total_votes = sum(results.values())
-    total_participants = len([u for u in contest_entries if u not in rejected_entries])
-
-    medals = ["🥇", "🥈", "🥉"]
-    target_hint = "бота" if contest_target == "bot" else "канала"
-    lines = [f"📊 <b>Результаты конкурса на аватарку {target_hint}!</b>\n"]
-    for i, (variant, count) in enumerate(top3):
-        medal = medals[i] if i < len(medals) else "•"
-        lines.append(f"{medal} Вариант {variant} — <b>{count}</b> голосов")
-    lines.append(f"\n🗳 Всего голосов: <b>{total_votes}</b>")
-    lines.append(f"👥 Участников: <b>{total_participants}</b>")
-    lines.append(f"\n🏆 Победитель станет новой аватаркой {target_hint}!")
-    if contest_target == "bot":
-        lines.append("ℹ️ Установите аватарку бота вручную из победившей работы.")
-    channel_text = "\n".join(lines)
-
-    winner_entry = None
-    if top3:
-        winner_num = top3[0][0]
-        for uid, entry in contest_entries.items():
-            if uid in rejected_entries:
-                continue
-            if entry.get("number") == winner_num:
-                winner_entry = entry
-                break
-
-    was_published = results_published
-
-    try:
-        if winner_entry:
-            if winner_entry.get("type") == "document":
-                await message.bot.send_document(
-                    CHANNEL_ID, document=winner_entry["file_id"],
-                    caption=channel_text, parse_mode=ParseMode.HTML
-                )
+    muted_list = ""
+    if muted_users:
+        muted_list = "\n\n🔇 <b>Замученные:</b>\n"
+        for uid, until_ts in list(muted_users.items()):
+            remaining = int(until_ts - datetime.now().timestamp())
+            
+            if is_admin:
+                username = await get_username_by_id(uid)
+                display_name = f"{username} (<code>{uid}</code>)"
             else:
-                await message.bot.send_photo(
-                    CHANNEL_ID, photo=winner_entry["file_id"],
-                    caption=channel_text, parse_mode=ParseMode.HTML
-                )
+                display_name = f"<code>{uid}</code>"
+                
+            if remaining > 0:
+                minutes = remaining // 60
+                muted_list += f"• {display_name} — {minutes} мин.\n"
+            else:
+                muted_list += f"• {display_name} — истек\n"
+    else:
+        muted_list = "\n\n🔇 <b>Замученных нет.</b>"
+
+    return (
+        f"📊 <b>Статистика:</b>\n"
+        f"👥 Пользователей: <b>{len(cached_users)}</b>\n"
+        f"💬 В ожидании: <b>{len(active_replies)}</b>\n"
+        f"📨 Сообщений всего: <b>{total_msgs}</b>\n"
+        f"📅 Сообщений сегодня: <b>{today_msgs}</b>"
+        f"{muted_list}"
+    )
+
+# ==============================================================================
+# ================= АДМИН-ПАНЕЛЬ ===============================================
+# ==============================================================================
+
+@admin_router.message(Command("admin", "админ"))
+@admin_router.message(F.text.lower().in_(["!admin", "!админ"]))
+async def admin_panel(message: Message):
+    if message.from_user.id not in ADMIN_IDS: return
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📊 Статистика", callback_data="admin_stats")],
+        [InlineKeyboardButton(text="🧹 Очистить ответы", callback_data="admin_clear_replies")],
+        [InlineKeyboardButton(text="🔌 Плагины", callback_data="admin_plugins")],
+        [InlineKeyboardButton(text="📚 Команды", callback_data="admin_settings")],
+    ])
+    await message.answer("🛠 <b>Админ-панель</b>\nВыбери действие:", reply_markup=kb, parse_mode=ParseMode.HTML)
+
+
+@admin_router.callback_query(F.data.startswith("admin_"))
+async def admin_menu_handler(callback: CallbackQuery):
+    if callback.from_user.id not in ADMIN_IDS: return
+    if callback.message is None:
+        return await callback.answer("Сообщение недоступно", show_alert=True)
+
+    action = callback.data.replace("admin_", "")
+
+    if action == "stats":
+        text = await _build_stats_text(is_admin=True)
+        await callback.message.answer(text, parse_mode=ParseMode.HTML)
+
+    elif action == "clear_replies":
+        async with active_replies_lock:
+            active_replies.clear()
+        mark_replies_dirty()
+        await callback.message.answer("✅ Все ожидания ответов очищены.")
+
+    elif action == "plugins":
+        plugins = plugin_registry.get_all()
+        back_kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="admin_back")]
+        ])
+        if not plugins:
+            await callback.message.answer(
+                "🔌 <b>Плагины</b>\n\nПока не подключено ни одного плагина.\n"
+                "Положите файл в папку <code>plugins/</code> и перезапустите бота.",
+                parse_mode=ParseMode.HTML, reply_markup=back_kb
+            )
         else:
-            await message.bot.send_message(CHANNEL_ID, channel_text, parse_mode=ParseMode.HTML)
+            text = "🔌 <b>Подключённые плагины:</b>\n\n"
+            for i, p in enumerate(plugins, 1):
+                text += f"<b>{i}. {esc(p.get('name', 'Без названия'))}</b>\n"
+                desc = p.get("description", "")
+                if desc:
+                    text += f"<i>{esc(desc)}</i>\n"
+                cmds = p.get("commands", [])
+                if cmds:
+                    for cmd, cmd_desc in cmds:
+                        text += f"• <code>{esc(cmd)}</code> — {esc(cmd_desc)}\n"
+                else:
+                    text += "• <i>команды не указаны</i>\n"
+                text += "\n"
+            await callback.message.answer(text, parse_mode=ParseMode.HTML, reply_markup=back_kb)
 
-        results_published = True
-        await save_contest_data()
+    elif action == "back":
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="📊 Статистика", callback_data="admin_stats")],
+            [InlineKeyboardButton(text="🧹 Очистить ответы", callback_data="admin_clear_replies")],
+            [InlineKeyboardButton(text="🔌 Плагины", callback_data="admin_plugins")],
+            [InlineKeyboardButton(text="📚 Команды", callback_data="admin_settings")],
+        ])
+        try:
+            await callback.message.edit_text(
+                "🛠 <b>Админ-панель</b>\nВыбери действие:",
+                reply_markup=kb, parse_mode=ParseMode.HTML
+            )
+        except TelegramBadRequest:
+            await callback.message.answer(
+                "🛠 <b>Админ-панель</b>\nВыбери действие:",
+                reply_markup=kb, parse_mode=ParseMode.HTML
+            )
 
-        suffix = " (повторно)" if was_published else ""
-        await message.answer(f"✅ Результаты опубликованы в канал{suffix}.")
+    elif action == "settings":
+        await callback.message.answer(
+            "📚 <b>Полная шпаргалка по командам</b>\n\n"
+            "📅 <b>Расписание</b>\n"
+            "• <code>!расписание</code> — <i>прикрепи фото расписания репетиций, в подписи напиши эту команду.</i>\n"
+            "• <code>!замены</code> — <i>прикрепи фото замен, в подписи напиши эту команду.</i>\n\n"
+            "📢 <b>Рассылка</b>\n"
+            "• <code>!рассылка [текст]</code> — разошлет текст всем.\n"
+            "• <code>!рассылка</code> + фото/видео — разошлет медиа.\n\n"
+            "✉️ <b>Личное сообщение</b>\n"
+            "• <code>!лс [ID|@username] [текст]</code> — отправит сообщение конкретному человеку.\n\n"
+            "🤖 <b>Сообщение от админа</b>\n"
+            "• <code>!адс [текст]</code> — опубликует сообщение с пометкой «Сообщение от админа».\n"
+            "• Можно прикрепить фото/видео.\n"
+            "• Работает как ответ на пост.\n\n"
+            "⏰ <b>Отложенный пост</b>\n"
+            "• <code>!отложка [ЧЧ:ММ] [текст]</code> — отложенная публикация.\n\n"
+            "🔘 <b>Кнопка к старому посту</b>\n"
+            "• <code>!кнопка [ID]</code> — добавит кнопки к старому посту.\n\n"
+            "📊 <b>Статистика и очистка</b>\n"
+            "• <code>!статистика</code> — общая статистика.\n"
+            "• <code>!очистить_ответы</code> — сброс ожиданий.\n\n"
+            "🕵️ <b>Аналитика (по базе данных)</b>\n"
+            "• <code>!кто [ID|@username]</code> — узнать инфу о пользователе.\n"
+            "• <code>!топ</code> — топ-10 самых активных.\n\n"
+            "🔌 <b>Плагины</b>\n"
+            "• Кнопка «🔌 Плагины» в админ-панели — список подключённых плагинов и их команд.",
+            parse_mode=ParseMode.HTML
+        )
+    await callback.answer()
+
+# ==============================================================================
+# ================= АДМИНСКИЕ КОМАНДЫ (ТЕКСТОВЫЕ) ==============================
+# ==============================================================================
+
+@admin_router.message((F.text | F.caption).startswith("!расписание"), F.from_user.id.in_(ADMIN_IDS + MODERATOR_IDS))
+async def set_schedule(message: Message):
+    if not message.photo:
+        await message.answer("❌ Пришлите команду вместе с картинкой расписания.")
+        return
+    try:
+        with open(SCHEDULE_FILE, "w", encoding="utf-8") as f:
+            f.write(message.photo[-1].file_id)
+        await message.answer("✅ Расписание успешно обновлено!")
     except Exception as e:
-        logging.error(f"Ошибка публикации результатов: {e}")
+        await message.answer(f"❌ Ошибка сохранения: {e}")
+
+@admin_router.message((F.text | F.caption).startswith("!замены"), F.from_user.id.in_(ADMIN_IDS + MODERATOR_IDS))
+async def set_schedule2(message: Message):
+    if not message.photo:
+        await message.answer("❌ Пришлите команду вместе с картинкой замен.")
+        return
+    try:
+        with open(SCHEDULE2_FILE, "w", encoding="utf-8") as f:
+            f.write(message.photo[-1].file_id)
+        await message.answer("✅ Замены обновлены!")
+    except Exception as e:
+        await message.answer(f"❌ Ошибка сохранения: {e}")
+
+@admin_router.message(F.text.startswith("!статистика"), F.from_user.id.in_(ADMIN_IDS + MODERATOR_IDS))
+async def admin_stats_text(message: Message):
+    # Проверяем, админ это или модератор
+    is_admin = message.from_user.id in ADMIN_IDS
+    text = await _build_stats_text(is_admin=is_admin)
+    await message.answer(text, parse_mode=ParseMode.HTML)
+
+@admin_router.message(F.text.startswith("!очистить_ответы"), F.from_user.id.in_(ADMIN_IDS))
+async def admin_clear_replies_text(message: Message):
+    async with active_replies_lock:
+        active_replies.clear()
+    mark_replies_dirty()
+    await message.answer("✅ Очищено.")
+
+@admin_router.message((F.text | F.caption).startswith("!адс"), F.from_user.id.in_(ADMIN_IDS))
+async def admin_message(message: Message):
+    source = message.text or message.caption or ""
+    clean_text = strip_command_prefix(source, "!адс")
+    if not clean_text and not message.photo and not message.video and not message.document and not message.audio and not message.voice and not message.video_note and not message.sticker:
+        await message.answer("❌ Текст сообщения пуст.")
+        return
+    async with active_replies_lock:
+        reply_to = active_replies.pop(message.from_user.id, None)
+    if reply_to is not None:
+        mark_replies_dirty()
+    admin_text = f"<b>⚠️ Сообщение от админа:</b>\n\n{esc(clean_text)}"
+    async def _send(reply_id):
+        if reply_id and not message.photo and not message.video and not message.document and not message.audio and not message.voice and not message.video_note and not message.sticker:
+            return await message.bot.send_message(CHANNEL_ID, admin_text, parse_mode=ParseMode.HTML, reply_to_message_id=reply_id)
+        else:
+            return await _send_media_with_caption(message.bot, CHANNEL_ID, message, caption=admin_text, parse_mode=ParseMode.HTML, reply_to_message_id=reply_id)
+    try:
+        try:
+            await _send(reply_to)
+        except Exception as e:
+            if "message to be replied not found" in str(e):
+                await _send(None)
+            else:
+                raise e
+        await message.answer("✅ Сообщение от админа опубликовано в канале.")
+    except Exception as e:
         await message.answer(f"❌ Ошибка публикации: {e}")
 
+@admin_router.message((F.text | F.caption).startswith("!отложка"), F.from_user.id.in_(ADMIN_IDS))
+async def set_delayed(message: Message):
+    source = message.text or message.caption or ""
+    parts = source.split(maxsplit=2)
+    if len(parts) < 3:
+        await message.answer("❌ Формат: !отложка ЧЧ:ММ Текст")
+        return
+    try:
+        h, m = map(int, parts[1].split(":"))
+        now_dt = datetime.now(ZoneInfo("Asia/Novosibirsk"))
+        target_dt = now_dt.replace(hour=h, minute=m, second=0, microsecond=0)
+        if target_dt < now_dt:
+            target_dt += timedelta(days=1)
+        post_data = serialize_message(message)
+        clean_text = parts[2].strip()
+        if not clean_text and not message.photo and not message.video and not message.document and not message.audio and not message.voice and not message.video_note and not message.sticker:
+            await message.answer("❌ Текст сообщения пуст.")
+            return
+        if message.caption:
+            original_caption = message.caption.replace(f"!отложка {parts[1]}", "").strip()
+            if original_caption and clean_text:
+                post_data["text"] = f"{original_caption}\n\n{clean_text}"
+            elif original_caption:
+                post_data["text"] = original_caption
+            else:
+                post_data["text"] = clean_text
+        else:
+            post_data["text"] = clean_text
+        if post_data["type"] in ("video_note", "sticker") and post_data["text"]:
+            await message.answer("⚠️ У кружочков и стикеров нет подписи — текст не будет опубликован.")
+        post_data["time"] = target_dt.timestamp()
+        delayed_posts.append(post_data)
+        with open(DELAYED_FILE, "w", encoding="utf-8") as f:
+            json.dump(delayed_posts, f)
+        await message.answer(f"⏰ Пост будет опубликован в {target_dt.strftime('%H:%M')} (НСК).")
+    except Exception as e:
+        await message.answer(f"❌ Ошибка: {e}")
 
-@router.message(F.text.lower().startswith("!конкурс_статус"), F.from_user.id.in_(ADMIN_IDS + MODERATOR_IDS))
-async def contest_status(message: Message):
-    if contest_is_active:
-        state = "🟢 Приём заявок"
-    elif results_published:
-        state = "🔵 Результаты опубликованы"
-    elif contest_entries:
-        state = "🟡 Голосование"
+@admin_router.message((F.text | F.caption).startswith("!кнопка"), F.from_user.id.in_(ADMIN_IDS))
+async def add_button(message: Message):
+    if message.text is None:
+        await message.answer("❌ Команда !кнопка работает только с текстом.")
+        return
+    parts = message.text.split()
+    if len(parts) < 2:
+        await message.answer("❌ Формат: !кнопка ID")
+        return
+    try:
+        msg_id = int(parts[1])
+        reply_kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="💬 Ответить", callback_data="reply_to_post"), InlineKeyboardButton(text="📩 Новое сообщение", url="https://t.me/PodslushanoNGHU_bot?start=new")]
+        ])
+        await message.bot.edit_message_reply_markup(chat_id=CHANNEL_ID, message_id=msg_id, reply_markup=reply_kb)
+        await message.answer(f"✅ Кнопки добавлены к {msg_id}.")
+    except TelegramBadRequest as e:
+        if "message can't be edited" in str(e):
+            await message.answer("❌ Нельзя редактировать: сообщение принадлежит не боту или слишком старое.")
+        else:
+            await message.answer(f"❌ Ошибка: {e}")
+
+@admin_router.message((F.text | F.caption).startswith("!рассылка"), F.from_user.id.in_(ADMIN_IDS))
+async def broadcast(message: Message):
+    source = message.text or message.caption or ""
+    clean_text = strip_command_prefix(source, "!рассылка")
+    has_media = bool(message.photo or message.video or message.document or message.audio or message.voice or message.video_note or message.sticker or message.contact or message.location)
+    if not clean_text and not has_media:
+        await message.answer("❌ Текст пуст.")
+        return
+    users = [uid for uid in get_all_users() if str(uid).isdigit()]
+    await message.answer(f"🚀 Рассылка для {len(users)}...")
+    success = 0
+    for uid_str in users:
+        try:
+            await _send_media_with_caption(message.bot, int(uid_str), message, caption=clean_text, parse_mode=ParseMode.HTML)
+            success += 1
+            await asyncio.sleep(0.1)
+        except Exception as e:
+            logging.warning(f"Не отправлено {uid_str}: {e}")
+    await message.answer(f"✅ Отправлено: {success} из {len(users)}.")
+
+@admin_router.message((F.text | F.caption).startswith("!лс"), F.from_user.id.in_(ADMIN_IDS))
+async def private_message(message: Message):
+    source = message.text or message.caption or ""
+    parts = source.split(maxsplit=2)
+    if len(parts) < 2:
+        await message.answer("❌ Формат: !лс ID|@username Текст")
+        return
+    target = parts[1]
+    if message.caption:
+        dm_text = strip_command_and_target(message.caption, "!лс", target)
     else:
-        state = "⚪ Не запущен"
+        dm_text = parts[2] if len(parts) > 2 else ""
+    if not dm_text.strip() and not message.photo and not message.video and not message.document and not message.audio and not message.voice and not message.video_note and not message.sticker:
+        await message.answer("❌ Текст сообщения пуст.")
+        return
+    try:
+        if target.startswith("@") or not target.isdigit():
+            target_id = await get_id_by_username(target.lstrip('@'))
+            if not target_id:
+                chat = await message.bot.get_chat(target)
+                target_id = chat.id
+                await save_username(target, target_id)
+        else:
+            target_id = int(target)
+    except Exception:
+        await message.answer("❌ Пользователь не найден.")
+        return
+    try:
+        await _send_media_with_caption(message.bot, target_id, message, caption=dm_text, parse_mode=ParseMode.HTML)
+        await message.answer("✅ Отправлено.")
+    except Exception:
+        await message.answer("❌ Ошибка отправки.")
 
-    target_hint = " (аватарка бота)" if contest_target == "bot" else " (аватарка канала)"
-    lines = [
-        f"📊 <b>Статус конкурса:</b> {state}{target_hint}",
-        f"👥 Работ: <b>{len([u for u in contest_entries if u not in rejected_entries])}</b>",
-        f"❌ Отклонено: <b>{len(rejected_entries)}</b>",
-        f"🗳 Голосов: <b>{len(contest_votes)}</b>",
-    ]
-    if contest_entries:
-        nums = sorted(e.get("number", 0) for u, e in contest_entries.items() if u not in rejected_entries and e.get("number", 0) > 0)
-        if nums:
-            lines.append(f"🔢 Варианты: {', '.join(map(str, nums))}")
+@admin_router.message(F.text.lower().startswith("!кто"), F.from_user.id.in_(ADMIN_IDS))
+async def admin_who_is(message: Message):
+    parts = message.text.split()
+    if len(parts) < 2:
+        await message.answer("❌ Формат: <code>!кто ID_или_@username</code>", parse_mode=ParseMode.HTML)
+        return
+    target = parts[1]
+    target_id = None
+    if target.startswith("@") or not target.isdigit():
+        target_id = await get_id_by_username(target.lstrip("@"))
+        if not target_id:
+            await message.answer("❌ Пользователь с таким юзернеймом не найден в базе.")
+            return
+    else:
+        target_id = int(target)
+    info = await get_user_info_db(target_id)
+    try:
+        chat = await message.bot.get_chat(target_id)
+        name = chat.full_name or "Неизвестно"
+    except Exception:
+        name = "Не удалось получить имя (не писал боту)"
+    text = (
+        f"🕵️ <b>Информация о пользователе</b>\n\n"
+        f"🆔 <b>ID:</b> <code>{target_id}</code>\n"
+        f"👤 <b>Имя:</b> {esc(name)}\n"
+        f"🔗 <b>Юзернейм:</b> {info['username']}\n"
+        f"💬 <b>Сообщений в базе:</b> {info['messages']}\n"
+        f"🔇 <b>В муте:</b> {'Да' if target_id in muted_users else 'Нет'}"
+    )
+    await message.answer(text, parse_mode=ParseMode.HTML)
+
+@admin_router.message(F.text.lower() == "!топ", F.from_user.id.in_(ADMIN_IDS))
+async def admin_top_users(message: Message):
+    top = await get_top_users_db(limit=10)
+    if not top:
+        await message.answer("📊 В базе пока нет сообщений от пользователей.")
+        return
+    lines = ["🏆 <b>Топ-10 самых активных анонимщиков:</b>\n"]
+    for i, item in enumerate(top, 1):
+        uid = item["user_id"]
+        count = item["count"]
+        try:
+            chat = await message.bot.get_chat(uid)
+            name = chat.full_name or "Без имени"
+        except Exception:
+            name = "Скрытый профиль"
+        lines.append(f"{i}. {esc(name)} (<code>{uid}</code>) — <b>{count}</b> сообщений")
     await message.answer("\n".join(lines), parse_mode=ParseMode.HTML)
 
+# ==============================================================================
+# ================= МОДЕРАТОРСКИЕ КОМАНДЫ ======================================
+# ==============================================================================
 
-@router.message(F.text.lower().startswith("!конкурс_сброс"), F.from_user.id.in_(ADMIN_IDS))
-async def contest_reset(message: Message):
+@admin_router.message(Command("moder", "модер"))
+@admin_router.message(F.text.lower().in_(["!moder", "!модер"]))
+async def moderator_panel(message: Message):
+    if message.from_user.id not in MODERATOR_IDS and message.from_user.id not in ADMIN_IDS: return
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✅ Да, сбросить всё", callback_data="contest_reset_confirm")],
-        [InlineKeyboardButton(text="❌ Отмена", callback_data="contest_reset_cancel")],
+        [InlineKeyboardButton(text="📚 Команды модератора", callback_data="moder_settings")],
+        [InlineKeyboardButton(text="📖 Инструкция", callback_data="moder_guide")], # <--- Новая кнопка
     ])
-    await message.answer(
-        "⚠️ <b>Полный сброс конкурса</b>\n\n"
-        "Будут удалены: работы, голоса, отклонения, флаги.\n"
-        "Посты вариантов в канале <b>останутся</b> (удалите вручную, если нужно).\n\n"
-        "Продолжить?",
-        parse_mode=ParseMode.HTML, reply_markup=kb
-    )
+    await message.answer("🛠 <b>Панель модератора</b>\nВыбери действие:", reply_markup=kb, parse_mode=ParseMode.HTML)
 
-
-@router.callback_query(F.data == "contest_reset_confirm")
-async def contest_reset_confirm(callback: CallbackQuery):
-    global contest_is_active, contest_entries, contest_votes, rejected_entries, results_published, contest_target
-
-    if callback.from_user.id not in ADMIN_IDS:
-        return await callback.answer("⛔ Нет доступа", show_alert=True)
-
-    contest_is_active = False
-    contest_entries = {}
-    contest_votes = {}
-    rejected_entries = set()
-    results_published = False
-    contest_target = "channel"
-    await save_contest_data()
-
-    try:
-        await callback.message.edit_text("✅ Конкурс полностью сброшен. Можно запускать заново (!начать_конкурс).")
-    except TelegramBadRequest:
-        pass
-    await callback.answer("Готово")
-
-
-@router.callback_query(F.data == "contest_reset_cancel")
-async def contest_reset_cancel(callback: CallbackQuery):
-    if callback.from_user.id not in ADMIN_IDS:
-        return await callback.answer("⛔ Нет доступа", show_alert=True)
-    try:
-        await callback.message.edit_text("❌ Сброс отменён.")
-    except TelegramBadRequest:
-        pass
-    await callback.answer()
-
-
-# ==============================================================================
-# ================= ПРИЁМ РАБОТ ОТ УЧАСТНИКОВ =================================
-# ==============================================================================
-
-@router.message(F.text.lower().regexp(r"^!конкурс(\s|$)"), F.chat.type == "private")
-async def contest_help(message: Message):
-    if not contest_is_active:
-        await message.answer("⚠️ Конкурс сейчас не проводится. Следите за анонсами в канале!")
-        return
-    await message.answer(
-        "📸 Чтобы отправить работу на конкурс, пришли <b>фото</b> с подписью <b>!конкурс</b>.\n"
-        "Например: выбери фото → в поле подписи напиши <code>!конкурс</code> → отправь.",
+@admin_router.callback_query(F.data == "moder_settings")
+async def moderator_settings(callback: CallbackQuery):
+    if callback.from_user.id not in MODERATOR_IDS and callback.from_user.id not in ADMIN_IDS: return
+    await callback.message.answer(
+        "📚 <b>Команды модератора</b>\n\n"
+        "📅 <b>Расписание</b>\n"
+        "• <code>!расписание</code> — обновить фото расписания.\n"
+        "• <code>!замены</code> — обновить фото замен.\n\n"
+        "🛡 <b>Сообщение от модератора</b>\n"
+        "• <code>!мдс [текст]</code> — опубликовать сообщение с пометкой «Сообщение от модератора».\n\n"
+        "🎂 <b>Дни рождения</b>\n"
+        "• <code>!др_добавить ID ДД.ММ</code> — добавить/изменить ДР.\n"
+        "• <code>!др_сегодня</code> — кто празднует сегодня.\n"
+        "• <code>!др_список</code> — все ДР.\n"
+        "• <code>!др_поиск ДД.ММ</code> — поиск по дате/месяцу.\n\n"
+        "🎨 <b>Конкурс</b>\n"
+        "• <code>!конкурс_статус</code> — краткий статус конкурса (если он идет).",
         parse_mode=ParseMode.HTML
     )
-
-
-@router.message(F.photo & F.caption.lower().regexp(r"^!конкурс(\s|$)"), F.chat.type == "private")
-async def handle_contest_photo(message: Message):
-    global contest_entries
-
-    if not contest_is_active:
-        await message.answer("⚠️ Конкурс сейчас не проводится. Следите за анонсами в канале!")
-        return
-
-    user_id = str(message.from_user.id)
-    if user_id in contest_entries:
-        await message.answer("⚠️ Вы уже отправили свою работу! Ждем результатов.")
-        return
-
-    contest_entries[user_id] = {
-        "file_id": message.photo[-1].file_id,
-        "number": 0,
-        "type": "photo",
-    }
-    await save_contest_data()
-
-    await message.answer("✅ Ваша работа принята на конкурс! Удачи! 🍀")
-
-    try:
-        log_kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="❌ Отклонить вариант (нарушение правил)", callback_data=f"reject_{user_id}")]
-        ])
-        await message.bot.send_photo(
-            LOG_CHAT_ID,
-            photo=message.photo[-1].file_id,
-            caption=f"🎨 <b>Новый участник конкурса!</b>\n👤 {message.from_user.full_name}\n🆔 ID: <code>{message.from_user.id}</code>",
-            reply_markup=log_kb,
-            parse_mode=ParseMode.HTML
-        )
-    except Exception as e:
-        logging.error(f"Не удалось уведомить лог-группу о конкурсе: {e}")
-
-
-@router.message(F.document & F.caption.lower().regexp(r"^!конкурс(\s|$)"), F.chat.type == "private")
-async def handle_contest_document(message: Message):
-    global contest_entries
-
-    if not message.document.mime_type or not message.document.mime_type.startswith("image/"):
-        await message.answer("⚠️ Пожалуйста, пришлите картинку (jpg, png и т.д.), а не этот файл.")
-        return
-
-    if not contest_is_active:
-        await message.answer("⚠️ Конкурс сейчас не проводится.")
-        return
-
-    user_id = str(message.from_user.id)
-    if user_id in contest_entries:
-        await message.answer("⚠️ Вы уже отправили свою работу!")
-        return
-
-    contest_entries[user_id] = {
-        "file_id": message.document.file_id,
-        "number": 0,
-        "type": "document",
-    }
-    await save_contest_data()
-
-    await message.answer("✅ Ваша работа (файл) принята на конкурс! Удачи! 🍀")
-
-    try:
-        log_kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="❌ Отклонить вариант", callback_data=f"reject_{user_id}")]
-        ])
-        await message.bot.send_document(
-            LOG_CHAT_ID,
-            document=message.document.file_id,
-            caption=f"🎨 <b>Новый участник конкурса (файл)!</b>\n👤 {message.from_user.full_name}\n🆔 ID: <code>{message.from_user.id}</code>",
-            reply_markup=log_kb,
-            parse_mode=ParseMode.HTML
-        )
-    except Exception as e:
-        logging.error(f"Ошибка лога (документ): {e}")
-
-
-# ==============================================================================
-# ================= ОТКЛОНЕНИЕ РАБОТЫ =========================================
-# ==============================================================================
-
-@router.callback_query(F.data.startswith("reject_"))
-async def handle_reject(callback: CallbackQuery):
-    if callback.from_user.id not in ADMIN_IDS:
-        await callback.answer("⛔ Нет доступа")
-        return
-
-    user_id = callback.data.replace("reject_", "")
-    if user_id not in contest_entries:
-        await callback.answer("⚠️ Этой работы уже нет в базе.", show_alert=True)
-        return
-
-    rejected_entries.add(user_id)
-
-    entry = contest_entries.get(user_id, {})
-    variant_num = entry.get("number", 0)
-    if variant_num:
-        to_delete = [k for k, v in contest_votes.items() if v == variant_num]
-        for k in to_delete:
-            del contest_votes[k]
-
-    await save_contest_data()
-
-    try:
-        await callback.message.edit_caption(
-            caption=f"❌ <b>РАБОТА ОТКЛОНЕНА</b>\n🆔 ID участника: <code>{user_id}</code>",
-            parse_mode=ParseMode.HTML
-        )
-    except TelegramBadRequest:
-        pass
-
-    await callback.answer("✅ Работа отклонена, голоса за неё аннулированы.")
-
-
-# ==============================================================================
-# ================= ГОЛОСОВАНИЕ И СМЕНА ГОЛОСА =================================
-# ==============================================================================
-
-@router.callback_query(F.data.startswith("vote_"))
-async def handle_vote(callback: CallbackQuery):
-    try:
-        variant_num = int(callback.data.split("_")[1])
-    except (IndexError, ValueError):
-        await callback.answer("❌ Некорректный вариант", show_alert=True)
-        return
-
-    if results_published:
-        await callback.answer("❌ Голосование завершено, результаты опубликованы.", show_alert=True)
-        return
-    if not _variant_exists(variant_num):
-        await callback.answer("❌ Этот вариант больше не участвует в голосовании.", show_alert=True)
-        return
-
-    user_id = str(callback.from_user.id)
-    current = contest_votes.get(user_id)
-
-    if current == variant_num:
-        await callback.answer(f"ℹ️ Вы уже голосуете за вариант {variant_num}.", show_alert=True)
-        return
-
-    if current is not None:
-        # Смена голоса через повторное нажатие — подтверждение не нужно, просто меняем
-        contest_votes[user_id] = variant_num
-        await save_contest_data()
-        await callback.answer(f"🔁 Голос изменён: вариант {current} → {variant_num}.", show_alert=True)
-        return
-
-    contest_votes[user_id] = variant_num
-    await save_contest_data()
-    await callback.answer(f"✅ Ваш голос за вариант {variant_num} принят!", show_alert=True)
-
-
-@router.callback_query(F.data == "change_vote")
-async def handle_change_vote(callback: CallbackQuery):
-    if results_published:
-        return await callback.answer("❌ Голосование завершено.", show_alert=True)
-    if not contest_entries:
-        return await callback.answer("❌ Нет активного голосования.", show_alert=True)
-
-    user_id = str(callback.from_user.id)
-    current = contest_votes.get(user_id)
-    nums = sorted({e.get("number", 0) for u, e in contest_entries.items() if u not in rejected_entries and e.get("number", 0) > 0})
-
-    if not nums:
-        return await callback.answer("❌ Нет доступных вариантов.", show_alert=True)
-
-    rows = []
-    for n in nums:
-        mark = " ✅" if current == n else ""
-        rows.append([InlineKeyboardButton(text=f"Вариант {n}{mark}", callback_data=f"vote_{n}")])
-    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="change_vote_back")])
-
-    kb = InlineKeyboardMarkup(inline_keyboard=rows)
-    text = "🔁 <b>Смена голоса</b>\n\nТекущий голос: " + (f"вариант {current}" if current else "нет") + "\nВыбери новый вариант:"
-    try:
-        await callback.message.answer(text, parse_mode=ParseMode.HTML, reply_markup=kb)
-    except Exception:
-        pass
     await callback.answer()
 
-
-@router.callback_query(F.data == "change_vote_back")
-async def handle_change_vote_back(callback: CallbackQuery):
-    try:
-        await callback.message.delete()
-    except Exception:
-        pass
+@admin_router.callback_query(F.data == "moder_guide")
+async def moderator_guide(callback: CallbackQuery):
+    if callback.from_user.id not in MODERATOR_IDS and callback.from_user.id not in ADMIN_IDS: return
+    
+    await callback.message.answer(
+        "📖 <b>Инструкция для модератора</b>\n\n"
+        "Твоя задача — следить за порядком в канале и помогать пользователям, не раскрывая лишних данных. А так же обновлять расписание репетиций и замен!\n\n"
+        
+        "🔹 <b>Обновление расписания</b>\n"
+        "Чтобы обновить расписание или замены, отправь боту <b>фотографию</b> (расписание или замены) и в поле <b>подписи к фото</b> напиши нужную команду:\n"
+        "• <code>!расписание</code> — для расписания репетиций.\n"
+        "• <code>!замены</code> — для изменений в обычном расписании.\n\n"
+        
+        "🔹 <b>Как отвечать на посты</b>\n"
+        "Ты можешь публиковать сообщения от лица модерации. Для этого нажми кнопку <b>«📩 Новое сообщение»</b> или <b>«💬 Ответить»</b> под нужным постом в канале, а затем в ЛС бота напиши:\n"
+        "<code>!мдс Твой текст</code>\n"
+        "Бот опубликует ответ с пометкой «🛡 Сообщение от модератора».\n\n"
+        
+        "🚫 <b>ВАЖНО:</b> Команду <code>!мдс</code> нельзя использовать для отправки обычных анонимных сообщений от своего лица! Для обычных постов и ответов пиши боту <b>без</b> этой команды (просто текст или фото), тогда они уйдут анонимно.\n\n"
+        
+        "🔹 <b>Жалобы и нарушения</b>\n"
+        "Если видишь жесткое нарушение правил (спам, флуд стикерами и т.д), напиши администрации (@Nammely или @rudenkkov).\n\n"
+        
+        "🔹 <b>Дни рождения</b>\n"
+        "Ты можешь добавлять и искать ДР пользователей. Список команд — в меню «📚 Команды модератора».\n\n"
+        
+        "⚠️ <i>Помни: от тебя много зависит, не заывай обновлять расписание. Будь вежлив и объективен.</i>",
+        parse_mode=ParseMode.HTML
+    )
     await callback.answer()
+
+@admin_router.message((F.text | F.caption).startswith("!мдс"), F.from_user.id.in_(MODERATOR_IDS + ADMIN_IDS))
+async def moderator_message(message: Message):
+    source = message.text or message.caption or ""
+    clean_text = strip_command_prefix(source, "!мдс")
+    if not clean_text and not message.photo and not message.video and not message.document and not message.audio and not message.voice and not message.video_note and not message.sticker:
+        await message.answer("❌ Текст сообщения пуст.")
+        return
+    async with active_replies_lock:
+        reply_to = active_replies.pop(message.from_user.id, None)
+    if reply_to is not None:
+        mark_replies_dirty()
+    moder_text = f"<b>🛡 Сообщение от модератора:</b>\n\n{esc(clean_text)}"
+    async def _send(reply_id):
+        if reply_id and not message.photo and not message.video and not message.document and not message.audio and not message.voice and not message.video_note and not message.sticker:
+            return await message.bot.send_message(CHANNEL_ID, moder_text, parse_mode=ParseMode.HTML, reply_to_message_id=reply_id)
+        else:
+            return await _send_media_with_caption(message.bot, CHANNEL_ID, message, caption=moder_text, parse_mode=ParseMode.HTML, reply_to_message_id=reply_id)
+    try:
+        try:
+            await _send(reply_to)
+        except Exception as e:
+            if "message to be replied not found" in str(e):
+                await _send(None)
+            else:
+                raise e
+        await message.answer("✅ Сообщение от модератора опубликовано в канале.")
+    except Exception as e:
+        await message.answer(f"❌ Ошибка публикации: {e}")
