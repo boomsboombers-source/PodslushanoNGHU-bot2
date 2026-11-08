@@ -5,7 +5,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 from aiogram import Router, F
 from aiogram.types import Message, FSInputFile, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
-from aiogram.filters import CommandStart, Command
+from aiogram.filters import CommandStart
 from aiogram.enums import ParseMode, ContentType
 from config import CHANNEL_ID, LOG_CHAT_ID, WELCOME_IMAGE, SCHEDULE_FILE, SCHEDULE2_FILE, ADMIN_IDS
 from services.storage import (
@@ -159,12 +159,13 @@ async def handle_all_messages(message: Message):
 
     # --- ПРОВЕРКА НА НЕАНОНИМНОЕ СООБЩЕНИЕ ---
     is_signed = False
-    if text.lower().startswith("!неанон"):
-        is_signed = True
-        text = text[len("!неанон"):].strip()
-    elif text.lower().startswith("!неаноним"):
+    # ВАЖНО: Сначала проверяем длинное слово "!неаноним", чтобы оно не перехватывалось коротким "!неанон"
+    if text.lower().startswith("!неаноним"):
         is_signed = True
         text = text[len("!неаноним"):].strip()
+    elif text.lower().startswith("!неанон"):
+        is_signed = True
+        text = text[len("!неанон"):].strip()
 
     # Проверка на пустоту после команды !неанон
     if is_signed and not text and not message.photo and not message.video and not message.document and not message.audio and not message.voice and not message.video_note and not message.sticker:
@@ -175,8 +176,8 @@ async def handle_all_messages(message: Message):
         )
         return
 
-    # Админские !команды не публикуем в канал
-    if user.id in ADMIN_IDS and text.startswith("!"):
+    # Админские !команды не публикуем в канал (но разрешаем !неанон)
+    if user.id in ADMIN_IDS and text.startswith("!") and not is_signed:
         return
 
     await save_user(user.id)
