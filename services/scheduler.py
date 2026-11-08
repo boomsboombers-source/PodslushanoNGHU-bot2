@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 from datetime import datetime
+from zoneinfo import ZoneInfo
 from config import CHANNEL_ID, LOG_CHAT_ID, DELAYED_FILE
 from services.storage import delayed_posts, muted_users, save_muted
 from aiogram.enums import ParseMode
@@ -35,7 +36,7 @@ async def send_delayed_post(bot, post: dict):
 async def delayed_poster(bot):
     while True:
         try:
-            now_ts = datetime.now().timestamp()
+            now_ts = datetime.now(ZoneInfo("Asia/Novosibirsk")).timestamp()
             to_remove_idx = []
             for idx, post in enumerate(list(delayed_posts)):
                 try:
