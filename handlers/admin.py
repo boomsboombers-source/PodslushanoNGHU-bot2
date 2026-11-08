@@ -19,7 +19,7 @@ from config import (
 )
 from services.storage import (
     cached_users, active_replies, mark_replies_dirty, save_user, save_username,
-    serialize_message, delayed_posts, get_all_users, get_id_by_username,
+    serialize_message, delayed_posts, delayed_posts_lock, get_all_users, get_id_by_username,
     get_username_by_id, muted_users, active_replies_lock
 )
 from services.media import _send_media_with_caption, esc
@@ -296,9 +296,10 @@ async def set_delayed(message: Message):
         if post_data["type"] in ("video_note", "sticker") and post_data["text"]:
             await message.answer("⚠️ У кружочков и стикеров нет подписи — текст не будет опубликован.")
         post_data["time"] = target_dt.timestamp()
-        delayed_posts.append(post_data)
-        with open(DELAYED_FILE, "w", encoding="utf-8") as f:
-            json.dump(delayed_posts, f)
+        async with delayed_posts_lock:
+            delayed_posts.append(post_data)
+            with open(DELAYED_FILE, "w", encoding="utf-8") as f:
+                json.dump(delayed_posts, f)
         await message.answer(f"⏰ Пост будет опубликован в {target_dt.strftime('%H:%M')} (НСК).")
     except Exception as e:
         await message.answer(f"❌ Ошибка: {e}")
@@ -457,7 +458,7 @@ async def moderator_settings(callback: CallbackQuery):
         "• <code>!др_список</code> — все ДР.\n"
         "• <code>!др_поиск ДД.ММ</code> — поиск по дате/месяцу.\n\n"
         "🎨 <b>Конкурс</b>\n"
-        "• <code>!конкурс_статус</code> — краткий статус конкурса (если он идет).",
+        "• <code>!конкурс_статус</code> — краткий статус конкурса.",
         parse_mode=ParseMode.HTML
     )
     await callback.answer()
