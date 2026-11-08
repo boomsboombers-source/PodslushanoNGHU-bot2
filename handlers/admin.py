@@ -221,9 +221,11 @@ async def set_schedule2(message: Message):
     except Exception as e:
         await message.answer(f"❌ Ошибка сохранения: {e}")
 
-@admin_router.message(F.text.startswith("!статистика"), F.from_user.id.in_(ADMIN_IDS))
+@admin_router.message(F.text.startswith("!статистика"), F.from_user.id.in_(ADMIN_IDS + MODERATOR_IDS))
 async def admin_stats_text(message: Message):
-    text = await _build_stats_text(is_admin=True)
+    # Проверяем, админ это или модератор
+    is_admin = message.from_user.id in ADMIN_IDS
+    text = await _build_stats_text(is_admin=is_admin)
     await message.answer(text, parse_mode=ParseMode.HTML)
 
 @admin_router.message(F.text.startswith("!очистить_ответы"), F.from_user.id.in_(ADMIN_IDS))
