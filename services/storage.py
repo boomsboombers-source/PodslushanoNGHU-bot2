@@ -55,7 +55,7 @@ async def save_user(user_id: int):
             cached_users.discard(user_id_str)
 
 def get_all_users() -> list[str]:
-    return list(cached_users.copy())
+    return [uid for uid in cached_users.copy() if str(uid).isdigit()]
 
 # ==============================================================================
 # ================= ЮЗЕРНЕЙМЫ ==================================================
