@@ -5,11 +5,11 @@
   !др ДД.ММ — сохранить свой ДР (все)
   !мой_др — показать свой ДР (все)
   !удалить_др — удалить свой ДР (все)
-  !др_сегодня — кто празднует сегодня (админ)
-  !др_список — все ДР (админ)
-  !др_добавить ID ДД.ММ — добавить/изменить ДР пользователя (админ)
-  !др_удалить ID — удалить ДР пользователя (админ)
-  !др_поиск ДД.ММ (или ММ) — поиск по дате/месяцу (админ)
+  !др_сегодня — кто празднует сегодня (админ, модер)
+  !др_список — все ДР (админ, модер)
+  !др_добавить ID ДД.ММ — добавить/изменить ДР пользователя (админ, модер)
+  !др_удалить ID — удалить ДР пользователя (только админ)
+  !др_поиск ДД.ММ (или ММ) — поиск по дате/месяцу (админ, модер)
 """
 
 import os
@@ -23,7 +23,7 @@ from aiogram import Router, F
 from aiogram.types import Message
 from aiogram.enums import ParseMode
 
-from config import CHANNEL_ID, ADMIN_IDS, DATA_DIR
+from config import CHANNEL_ID, ADMIN_IDS, MODERATOR_IDS, DATA_DIR
 from services.media import esc
 
 PLUGIN_INFO = {
@@ -33,11 +33,11 @@ PLUGIN_INFO = {
         ("!др ДД.ММ", "сохранить свой ДР (все)"),
         ("!мой_др", "показать свой ДР (все)"),
         ("!удалить_др", "удалить свой ДР (все)"),
-        ("!др_сегодня", "кто празднует сегодня (админ)"),
-        ("!др_список", "все ДР (админ)"),
-        ("!др_добавить ID ДД.ММ", "добавить/изменить ДР (админ)"),
+        ("!др_сегодня", "кто празднует сегодня (админ, модер)"),
+        ("!др_список", "все ДР (админ, модер)"),
+        ("!др_добавить ID ДД.ММ", "добавить/изменить ДР (админ, модер)"),
         ("!др_удалить ID", "удалить ДР пользователя (админ)"),
-        ("!др_поиск ДД.ММ", "поиск по дате/месяцу (админ)"),
+        ("!др_поиск ДД.ММ", "поиск по дате/месяцу (админ, модер)"),
     ],
 }
 
@@ -119,10 +119,10 @@ def _display_name(chat) -> str:
 
 
 # ==============================================================================
-# ================= АДМИНСКИЕ (регистрируем ВЫШЕ !др) ========================
+# ================= АДМИНСКИЕ / МОДЕРАТОРСКИЕ =================================
 # ==============================================================================
 
-@router.message(F.text.lower().startswith("!др_сегодня"), F.from_user.id.in_(ADMIN_IDS))
+@router.message(F.text.lower().startswith("!др_сегодня"), F.from_user.id.in_(ADMIN_IDS + MODERATOR_IDS))
 async def bday_today(message: Message):
     today = datetime.now(ZoneInfo("Asia/Novosibirsk")).strftime("%d.%m")
     people = [uid for uid, dm in birthdays.items() if dm == today]
@@ -141,7 +141,7 @@ async def bday_today(message: Message):
     await message.answer("\n".join(lines), parse_mode=ParseMode.HTML)
 
 
-@router.message(F.text.lower().startswith("!др_список"), F.from_user.id.in_(ADMIN_IDS))
+@router.message(F.text.lower().startswith("!др_список"), F.from_user.id.in_(ADMIN_IDS + MODERATOR_IDS))
 async def bday_list(message: Message):
     if not birthdays:
         await message.answer("ℹ️ Список ДР пуст.")
@@ -159,7 +159,7 @@ async def bday_list(message: Message):
     await message.answer("\n".join(lines), parse_mode=ParseMode.HTML)
 
 
-@router.message(F.text.lower().startswith("!др_добавить"), F.from_user.id.in_(ADMIN_IDS))
+@router.message(F.text.lower().startswith("!др_добавить"), F.from_user.id.in_(ADMIN_IDS + MODERATOR_IDS))
 async def admin_add_birthday(message: Message):
     parts = message.text.split(maxsplit=2)
     if len(parts) < 3:
@@ -208,7 +208,7 @@ async def admin_del_birthday(message: Message):
         await message.answer(f"⚠️ Пользователь <code>{target_id}</code> не найден в базе ДР.", parse_mode=ParseMode.HTML)
 
 
-@router.message(F.text.lower().startswith("!др_поиск"), F.from_user.id.in_(ADMIN_IDS))
+@router.message(F.text.lower().startswith("!др_поиск"), F.from_user.id.in_(ADMIN_IDS + MODERATOR_IDS))
 async def admin_find_birthday(message: Message):
     parts = message.text.split()
     if len(parts) < 2:
