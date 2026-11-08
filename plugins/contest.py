@@ -21,7 +21,7 @@ from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKe
 from aiogram.enums import ParseMode
 from aiogram.exceptions import TelegramBadRequest
 
-from config import CHANNEL_ID, LOG_CHAT_ID, ADMIN_IDS, DATA_DIR
+from config import CHANNEL_ID, LOG_CHAT_ID, ADMIN_IDS, MODERATOR_IDS, DATA_DIR
 
 # ==============================================================================
 # ================= МЕТАДАННЫЕ ДЛЯ МЕНЮ «🔌 ПЛАГИНЫ» ===========================
@@ -31,7 +31,7 @@ PLUGIN_INFO = {
     "name": "Конкурс аватарок ТГК",
     "description": "Конкурс на новую аватарку канала с голосованием и сменой голоса",
     "commands": [
-        ("!начать_конкурс", "запустить конкурс (админ)"),
+        ("!начать_конкурс", "запустить конкурс (админ; добавьте «бот» для аватарки бота)"),
         ("!завершить_конкурс", "завершить приём и опубликовать работы (админ)"),
         ("!дополнить_вариант", "добавить работу в идущее голосование (админ)"),
         ("!результаты", "опубликовать результаты в канал (админ)"),
@@ -63,13 +63,14 @@ contest_votes = {}        # {voter_id_str: variant_number}
 contest_is_active = False
 rejected_entries = set()  # {user_id_str, ...}
 results_published = False
+contest_target = "channel"  # "channel" или "bot"
 
 contest_file_lock = asyncio.Lock()
 pending_reset = set()     # {admin_id, ...} — кто нажал «Сброс», ждём подтверждения
 
 
 def load_contest_data():
-    global contest_entries, contest_votes, contest_is_active, rejected_entries, results_published
+    global contest_entries, contest_votes, contest_is_active, rejected_entries, results_published, contest_target
     try:
         if os.path.exists(CONTEST_VOTES_FILE):
             with open(CONTEST_VOTES_FILE, "r", encoding="utf-8") as f:
@@ -83,6 +84,7 @@ def load_contest_data():
                 contest_is_active = data.get("active", False)
                 contest_entries = data.get("entries", {})
                 results_published = data.get("results_published", False)
+                contest_target = data.get("target", "channel")
     except Exception as e:
         logging.error(f"Ошибка загрузки данных конкурса: {e}")
 
@@ -99,6 +101,7 @@ async def save_contest_data():
                     "active": contest_is_active,
                     "entries": contest_entries,
                     "results_published": results_published,
+                    "target": contest_target,
                 }, f)
             os.replace(CONTEST_ACTIVE_FILE + ".tmp", CONTEST_ACTIVE_FILE)
 
@@ -168,11 +171,19 @@ async def _publish_entry(bot, entry: dict, variant_num: int) -> bool:
 
 @router.message(F.text.lower().startswith("!начать_конкурс"), F.from_user.id.in_(ADMIN_IDS))
 async def start_contest(message: Message):
-    global contest_is_active, contest_entries, contest_votes, rejected_entries, results_published
+    global contest_is_active, contest_entries, contest_votes, rejected_entries, results_published, contest_target
 
     if contest_is_active:
         await message.answer("⚠️ Конкурс уже запущен! Сначала завершите текущий (!завершить_конкурс).")
         return
+
+    # Цель конкурса: канал (по умолчанию) или аватарка бота
+    raw = (message.text or "").lower()
+    body = raw[len("!начать_конкурс"):].strip()
+    if body in ("бот", "бота", "bot", "tg", "telegram"):
+        contest_target = "bot"
+    else:
+        contest_target = "channel"
 
     # Удаляем старые посты вариантов из канала (если есть message_id)
     old_msg_ids = [e.get("message_id") for e in contest_entries.values() if e.get("message_id")]
@@ -189,19 +200,20 @@ async def start_contest(message: Message):
     results_published = False
     await save_contest_data()
 
+    target_word = "БОТА" if contest_target == "bot" else "КАНАЛА"
     await message.bot.send_message(
         CHANNEL_ID,
-        "🎨 <b>КОНКУРС НА НОВУЮ АВАТАРКУ КАНАЛА!</b>\n\n"
+        f"🎨 <b>КОНКУРС НА НОВУЮ АВАТАРКУ {target_word}!</b>\n\n"
         "Присылайте свои варианты картинок <b>боту в личные сообщения</b>.\n"
         "В подписи к фото обязательно напишите <b>!конкурс</b>.\n\n"
         "📜 <b>Основные правила:</b>\n"
         "1. Аватарка должна быть хотя бы косвенно связана с училищем.\n"
         "2. Фотографии эротического и порнографического характера запрещены.\n\n"
-        "🏆 Лучший вариант станет новой аватаркой нашего канала!\n\n"
+        "🏆 Лучший вариант станет новой аватаркой нашего " + ("бота!" if contest_target == "bot" else "канала!") + "\n\n"
         "⏳ Прием заявок открыт. Ждем именно твой креатив!",
         parse_mode=ParseMode.HTML
     )
-    await message.answer("✅ Конкурс запущен! Участники могут присылать картинки с пометкой !конкурс.")
+    await message.answer(f"✅ Конкурс запущен! Цель: {'аватарка бота' if contest_target == 'bot' else 'аватарка канала'}. Участники могут присылать картинки с пометкой !конкурс.")
 
 
 @router.message(F.text.lower().startswith("!завершить_конкурс"), F.from_user.id.in_(ADMIN_IDS))
@@ -318,13 +330,16 @@ async def contest_results(message: Message):
     total_participants = len([u for u in contest_entries if u not in rejected_entries])
 
     medals = ["🥇", "🥈", "🥉"]
-    lines = ["📊 <b>Результаты конкурса аватарок!</b>\n"]
+    target_hint = "бота" if contest_target == "bot" else "канала"
+    lines = [f"📊 <b>Результаты конкурса на аватарку {target_hint}!</b>\n"]
     for i, (variant, count) in enumerate(top3):
         medal = medals[i] if i < len(medals) else "•"
         lines.append(f"{medal} Вариант {variant} — <b>{count}</b> голосов")
     lines.append(f"\n🗳 Всего голосов: <b>{total_votes}</b>")
     lines.append(f"👥 Участников: <b>{total_participants}</b>")
-    lines.append("\n🏆 Победитель станет новой аватаркой канала!")
+    lines.append(f"\n🏆 Победитель станет новой аватаркой {target_hint}!")
+    if contest_target == "bot":
+        lines.append("ℹ️ Установите аватарку бота вручную из победившей работы.")
     channel_text = "\n".join(lines)
 
     winner_entry = None
@@ -364,7 +379,7 @@ async def contest_results(message: Message):
         await message.answer(f"❌ Ошибка публикации: {e}")
 
 
-@router.message(F.text.lower().startswith("!конкурс_статус"), F.from_user.id.in_(ADMIN_IDS))
+@router.message(F.text.lower().startswith("!конкурс_статус"), F.from_user.id.in_(ADMIN_IDS + MODERATOR_IDS))
 async def contest_status(message: Message):
     if contest_is_active:
         state = "🟢 Приём заявок"
@@ -375,8 +390,9 @@ async def contest_status(message: Message):
     else:
         state = "⚪ Не запущен"
 
+    target_hint = " (аватарка бота)" if contest_target == "bot" else " (аватарка канала)"
     lines = [
-        f"📊 <b>Статус конкурса:</b> {state}",
+        f"📊 <b>Статус конкурса:</b> {state}{target_hint}",
         f"👥 Работ: <b>{len([u for u in contest_entries if u not in rejected_entries])}</b>",
         f"❌ Отклонено: <b>{len(rejected_entries)}</b>",
         f"🗳 Голосов: <b>{len(contest_votes)}</b>",
@@ -405,7 +421,7 @@ async def contest_reset(message: Message):
 
 @router.callback_query(F.data == "contest_reset_confirm")
 async def contest_reset_confirm(callback: CallbackQuery):
-    global contest_is_active, contest_entries, contest_votes, rejected_entries, results_published
+    global contest_is_active, contest_entries, contest_votes, rejected_entries, results_published, contest_target
 
     if callback.from_user.id not in ADMIN_IDS:
         return await callback.answer("⛔ Нет доступа", show_alert=True)
@@ -415,6 +431,7 @@ async def contest_reset_confirm(callback: CallbackQuery):
     contest_votes = {}
     rejected_entries = set()
     results_published = False
+    contest_target = "channel"
     await save_contest_data()
 
     try:
@@ -439,7 +456,7 @@ async def contest_reset_cancel(callback: CallbackQuery):
 # ================= ПРИЁМ РАБОТ ОТ УЧАСТНИКОВ =================================
 # ==============================================================================
 
-@router.message(F.text.lower().startswith("!конкурс"), F.chat.type == "private")
+@router.message(F.text.lower().regexp(r"^!конкурс(\s|$)"), F.chat.type == "private")
 async def contest_help(message: Message):
     if not contest_is_active:
         await message.answer("⚠️ Конкурс сейчас не проводится. Следите за анонсами в канале!")
@@ -451,7 +468,7 @@ async def contest_help(message: Message):
     )
 
 
-@router.message(F.photo & F.caption.lower().startswith("!конкурс"), F.chat.type == "private")
+@router.message(F.photo & F.caption.lower().regexp(r"^!конкурс(\s|$)"), F.chat.type == "private")
 async def handle_contest_photo(message: Message):
     global contest_entries
 
@@ -488,7 +505,7 @@ async def handle_contest_photo(message: Message):
         logging.error(f"Не удалось уведомить лог-группу о конкурсе: {e}")
 
 
-@router.message(F.document & F.caption.lower().startswith("!конкурс"), F.chat.type == "private")
+@router.message(F.document & F.caption.lower().regexp(r"^!конкурс(\s|$)"), F.chat.type == "private")
 async def handle_contest_document(message: Message):
     global contest_entries
 
