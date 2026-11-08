@@ -91,6 +91,7 @@ async def main():
     logging.info("Бот запущен. Ожидание сообщений...")
 
     from plugins.birthdays import auto_congratulate
+    from plugins.events import check_events_loop
     from datetime import datetime
     from zoneinfo import ZoneInfo
 
@@ -112,6 +113,7 @@ async def main():
         asyncio.create_task(delayed_poster(bot)),
         asyncio.create_task(cleanup_muted()),
         asyncio.create_task(_birthday_loop()),
+        asyncio.create_task(check_events_loop(bot)),
     ]
 
     try:
