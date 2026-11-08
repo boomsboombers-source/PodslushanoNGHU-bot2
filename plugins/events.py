@@ -141,7 +141,7 @@ async def list_events(message: Message):
     lines = ["📅 <b>Ближайшие события:</b>\n"]
     for ev_id, ev in actual_events:
         dt = datetime.fromtimestamp(ev["datetime"], ZoneInfo("Asia/Novosibirsk"))
-        lines.append(f"• <b>{dt.strftime('%d.%m %H:%M')}</b> — {ev['text']}")
+        lines.append(f"• <code>{ev_id}</code> | <b>{dt.strftime('%d.%m %H:%M')}</b> — {ev['text']}")
     
     await message.answer("\n".join(lines), parse_mode=ParseMode.HTML)
 
