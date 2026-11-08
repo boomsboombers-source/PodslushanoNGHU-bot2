@@ -75,3 +75,27 @@ async def log_message_db(user_id: int, date: str, msg_type: str, text: str):
         (user_id, date, msg_type, text)
     )
     await db.commit()
+
+async def get_user_info_db(user_id: int) -> dict:
+    """Возвращает инфу о юзере (юзернейм и кол-во сообщений)."""
+    # 1. Ищем юзернейм
+    async with db.execute("SELECT username FROM usernames WHERE user_id = ?", (user_id,)) as cursor:
+        row = await cursor.fetchone()
+        username = f"@{row[0]}" if row else "нет username"
+    
+    # 2. Считаем сообщения
+    async with db.execute("SELECT COUNT(*) FROM messages WHERE user_id = ?", (user_id,)) as cursor:
+        msg_count = (await cursor.fetchone())[0]
+        
+    return {"username": username, "messages": msg_count}
+
+async def get_top_users_db(limit: int = 5) -> list[dict]:
+    """Возвращает топ юзеров по кол-ву сообщений."""
+    top = []
+    async with db.execute(
+        "SELECT user_id, COUNT(*) as cnt FROM messages WHERE user_id != 0 GROUP BY user_id ORDER BY cnt DESC LIMIT ?", 
+        (limit,)
+    ) as cursor:
+        async for row in cursor:
+            top.append({"user_id": row[0], "count": row[1]})
+    return top
