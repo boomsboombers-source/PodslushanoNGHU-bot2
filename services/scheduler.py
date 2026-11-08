@@ -4,7 +4,7 @@ import logging
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from config import CHANNEL_ID, LOG_CHAT_ID, DELAYED_FILE
-from services.storage import delayed_posts, muted_users, save_muted
+from services.storage import delayed_posts, delayed_posts_lock, muted_users, muted_lock, save_muted
 from aiogram.enums import ParseMode
 
 async def send_delayed_post(bot, post: dict):
@@ -38,7 +38,9 @@ async def delayed_poster(bot):
         try:
             now_ts = datetime.now(ZoneInfo("Asia/Novosibirsk")).timestamp()
             to_remove_ids = set()
-            for post in list(delayed_posts):
+            async with delayed_posts_lock:
+                snapshot = list(delayed_posts)
+            for post in snapshot:
                 try:
                     if post.get("time", float("inf")) <= now_ts:
                         await send_delayed_post(bot, post)
@@ -52,9 +54,10 @@ async def delayed_poster(bot):
                     to_remove_ids.add(id(post))
 
             if to_remove_ids:
-                delayed_posts[:] = [p for p in delayed_posts if id(p) not in to_remove_ids]
-                with open(DELAYED_FILE, "w", encoding="utf-8") as f:
-                    json.dump(delayed_posts, f)
+                async with delayed_posts_lock:
+                    delayed_posts[:] = [p for p in delayed_posts if id(p) not in to_remove_ids]
+                    with open(DELAYED_FILE, "w", encoding="utf-8") as f:
+                        json.dump(delayed_posts, f)
         except Exception as e:
             logging.error(f"Критическая ошибка в delayed_poster: {e}")
         await asyncio.sleep(30)
@@ -63,10 +66,12 @@ async def cleanup_muted():
     while True:
         try:
             now_ts = datetime.now().timestamp()
-            expired = [uid for uid, until in list(muted_users.items()) if until < now_ts]
-            if expired:
+            expired = []
+            async with muted_lock:
+                expired = [uid for uid, until in list(muted_users.items()) if until < now_ts]
                 for uid in expired:
                     muted_users.pop(uid, None)
+            if expired:
                 await save_muted()
                 logging.info(f"Очищено {len(expired)} истекших мутов.")
         except Exception as e:
