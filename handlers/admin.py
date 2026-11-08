@@ -434,6 +434,7 @@ async def moderator_panel(message: Message):
     if message.from_user.id not in MODERATOR_IDS and message.from_user.id not in ADMIN_IDS: return
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📚 Команды модератора", callback_data="moder_settings")],
+        [InlineKeyboardButton(text="📖 Инструкция", callback_data="moder_guide")], # <--- Новая кнопка
     ])
     await message.answer("🛠 <b>Панель модератора</b>\nВыбери действие:", reply_markup=kb, parse_mode=ParseMode.HTML)
 
@@ -452,6 +453,37 @@ async def moderator_settings(callback: CallbackQuery):
         "• <code>!др_сегодня</code> — кто празднует сегодня.\n"
         "• <code>!др_список</code> — все ДР.\n"
         "• <code>!др_поиск ДД.ММ</code> — поиск по дате/месяцу.",
+        parse_mode=ParseMode.HTML
+    )
+    await callback.answer()
+
+@admin_router.callback_query(F.data == "moder_guide")
+async def moderator_guide(callback: CallbackQuery):
+    if callback.from_user.id not in MODERATOR_IDS and callback.from_user.id not in ADMIN_IDS: return
+    
+    await callback.message.answer(
+        "📖 <b>Инструкция для модератора</b>\n\n"
+        "Твоя задача — следить за порядком в канале и помогать пользователям, не раскрывая лишних данных. А так же обновлять расписание репетиций и замен!\n\n"
+        
+        "🔹 <b>Обновление расписания</b>\n"
+        "Чтобы обновить расписание или замены, отправь боту <b>фотографию</b> (расписание или замены) и в поле <b>подписи к фото</b> напиши нужную команду:\n"
+        "• <code>!расписание</code> — для основного расписания.\n"
+        "• <code>!замены</code> — для изменений.\n\n"
+        
+        "🔹 <b>Как отвечать на посты</b>\n"
+        "Ты можешь публиковать сообщения от лица модерации. Для этого нажми кнопку <b>«📩 Новое сообщение»</b> или <b>«💬 Ответить»</b> под нужным постом в канале, а затем в ЛС бота напиши:\n"
+        "<code>!мдс Твой текст</code>\n"
+        "Бот опубликует ответ с пометкой «🛡 Сообщение от модератора».\n\n"
+        
+        "🚫 <b>ВАЖНО:</b> Команду <code>!мдс</code> нельзя использовать для отправки обычных анонимных сообщений от своего лица! Для обычных постов и ответов пиши боту <b>без</b> этой команды (просто текст или фото), тогда они уйдут анонимно.\n\n"
+        
+        "🔹 <b>Жалобы и нарушения</b>\n"
+        "Если видишь жесткое нарушение правил (спам, флуд стикерами и т.д), напиши администрации (@Nammely или @rudenkkov).\n\n"
+        
+        "🔹 <b>Дни рождения</b>\n"
+        "Ты можешь добавлять и искать ДР пользователей. Список команд — в меню «📚 Команды модератора».\n\n"
+        
+        "⚠️ <i>Помни: от тебя много зависит, не заывай обновлять расписание. Будь вежлив и объективен.</i>",
         parse_mode=ParseMode.HTML
     )
     await callback.answer()
