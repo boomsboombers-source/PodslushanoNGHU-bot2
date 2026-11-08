@@ -105,8 +105,11 @@ def parse_dm(text: str):
         d, m = int(parts[0]), int(parts[1])
         if not (1 <= d <= 31 and 1 <= m <= 12):
             return None
+        # Проверяем, что дата реальна (например, 31.02 недопустима)
+        import datetime as _dt
+        _dt.date(2000, m, d)
         return f"{d:02d}.{m:02d}"
-    except ValueError:
+    except (ValueError, OverflowError):
         return None
 
 
