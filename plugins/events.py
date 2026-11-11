@@ -1,17 +1,27 @@
 # plugins/events.py
 """
 Плагин «События и напоминания».
-Команды:
-  !событие ДД.ММ [ЧЧ:ММ] Текст — добавить событие (админ, модер)
-  !события — список ближайших событий (все)
-  !удалить_событие ID — удалить событие (админ)
+
+Типы событий (флаг announce):
+  • announce=True  — авто-напоминания идут в канал (CHANNEL_ID).
+  • announce=False — «тихое» событие: в канал не напоминаем, но в !события показываем.
+
+Команды (все — Админ + Модер):
+  !событие ДД.ММ [ЧЧ:ММ] Текст   — добавить событие с уведомлением
+  !событие_т ДД.ММ [ЧЧ:ММ] Текст — добавить событие без уведомления
+  !событие_режим ID              — переключить режим события (announce toggle)
+  !удалить_событие ID            — удалить событие
+
+Команда для всех:
+  !события                       — список ближайших событий
 """
 
 import os
 import json
 import logging
 import asyncio
-from datetime import datetime, timedelta
+import re
+from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from aiogram import Router, F
@@ -22,25 +32,41 @@ from config import CHANNEL_ID, ADMIN_IDS, MODERATOR_IDS, DATA_DIR
 
 PLUGIN_INFO = {
     "name": "События",
-    "description": "Календарь событий и авто-напоминания в канал",
+    "description": "Календарь событий с авто-напоминаниями в канал (можно отключать)",
     "commands": [
-        ("!событие ДД.ММ ЧЧ:ММ Текст", "добавить событие (админ, модер)"),
+        ("!событие ДД.ММ ЧЧ:ММ Текст", "добавить событие с уведомлением (админ, модер)"),
+        ("!событие_т ДД.ММ ЧЧ:ММ Текст", "добавить событие без уведомления (админ, модер)"),
+        ("!событие_режим ID", "переключить режим уведомлений у события (админ, модер)"),
         ("!события", "список ближайших событий (все)"),
-        ("!удалить_событие ID", "удалить событие (админ)"),
+        ("!удалить_событие ID", "удалить событие (админ, модер)"),
     ],
 }
 
 router = Router(name="events")
 
-# === НОВЫЙ ПУТЬ К ПАПКЕ ===
 EVENTS_DIR = os.path.join(DATA_DIR, "events")
 os.makedirs(EVENTS_DIR, exist_ok=True)
 EVENTS_FILE = os.path.join(EVENTS_DIR, "events.json")
 
-events = {}  # {"id": {"text": str, "datetime": timestamp, "notified_day": bool, "notified_hour": bool}}
+# {"id": {"text": str, "datetime": ts, "notified_day": bool, "notified_hour": bool, "announce": bool}}
+events = {}
 event_counter = 0
 events_lock = asyncio.Lock()
 
+NSK = ZoneInfo("Asia/Novosibirsk")
+STAFF = ADMIN_IDS + MODERATOR_IDS
+
+# Фильтры-регэкспы, чтобы !события не перехватывалось !событие и т.п.
+_RE_EVENT = re.compile(r"^!событие(\s|$)", re.IGNORECASE)
+_RE_EVENT_T = re.compile(r"^!событие_т(\s|$)", re.IGNORECASE)
+_RE_EVENT_MODE = re.compile(r"^!событие_режим(\s|$)", re.IGNORECASE)
+_RE_EVENTS_LIST = re.compile(r"^!события$", re.IGNORECASE)
+_RE_EVENT_DEL = re.compile(r"^!удалить_событие(\s|$)", re.IGNORECASE)
+
+
+# ==============================================================================
+# ================= ХРАНИЛИЩЕ ==================================================
+# ==============================================================================
 
 def load_events():
     global events, event_counter
@@ -50,6 +76,13 @@ def load_events():
                 data = json.load(f)
                 events = data.get("events", {})
                 event_counter = data.get("counter", 0)
+            for ev in events.values():
+                if ev.get("announce") is None:
+                    ev["announce"] = True
+                if ev.get("notified_day") is None:
+                    ev["notified_day"] = False
+                if ev.get("notified_hour") is None:
+                    ev["notified_hour"] = False
         except Exception as e:
             logging.error(f"Ошибка загрузки events.json: {e}")
 
@@ -69,90 +102,154 @@ load_events()
 
 
 # ==============================================================================
+# ================= ВСПОМОГАТЕЛЬНОЕ ============================================
+# ==============================================================================
+
+def _parse_event_args(body: str):
+    """
+    body — строка после команды.
+    Форматы:
+      'ДД.ММ Текст'
+      'ДД.ММ ЧЧ:ММ Текст'
+    Возвращает (target_dt, text) или (None, None).
+    """
+    parts = body.split(maxsplit=2)
+    if len(parts) < 2:
+        return None, None
+    try:
+        date_str = parts[0]
+        has_time = len(parts) >= 2 and ":" in parts[1]
+        if has_time:
+            if len(parts) < 3:
+                return None, None
+            time_str = parts[1]
+            text = parts[2]
+            dt_str = f"{date_str}.{datetime.now(NSK).year} {time_str}"
+            target_dt = datetime.strptime(dt_str, "%d.%m.%Y %H:%M")
+        else:
+            text = " ".join(parts[1:])
+            dt_str = f"{date_str}.{datetime.now(NSK).year} 08:00"
+            target_dt = datetime.strptime(dt_str, "%d.%m.%Y %H:%M")
+
+        target_dt = target_dt.replace(tzinfo=NSK)
+        if target_dt < datetime.now(NSK):
+            target_dt = target_dt.replace(year=target_dt.year + 1)
+        return target_dt, text.strip()
+    except Exception:
+        return None, None
+
+
+async def _add_event(message: Message, body: str, announce: bool):
+    global event_counter
+    target_dt, text = _parse_event_args(body)
+    if not target_dt or not text:
+        example = "!событие_т" if not announce else "!событие"
+        await message.answer(
+            f"❌ Формат: <code>{example} ДД.ММ [ЧЧ:ММ] Текст</code>\n"
+            f"Пример: <code>{example} 20.11 18:00 Концерт</code>",
+            parse_mode=ParseMode.HTML
+        )
+        return
+
+    event_counter += 1
+    ev_id = str(event_counter)
+    events[ev_id] = {
+        "text": text,
+        "datetime": target_dt.timestamp(),
+        "notified_day": False,
+        "notified_hour": False,
+        "announce": announce,
+    }
+    await save_events()
+
+    mode = "📢 с уведомлением в канал" if announce else "🔕 без уведомления"
+    await message.answer(
+        f"✅ Событие добавлено!\n"
+        f"ID: <code>{ev_id}</code>\n"
+        f"Режим: {mode}\n"
+        f"Когда: {target_dt.strftime('%d.%m.%Y %H:%M')}\n"
+        f"Что: {text}",
+        parse_mode=ParseMode.HTML
+    )
+
+
+# ==============================================================================
 # ================= КОМАНДЫ ====================================================
 # ==============================================================================
 
-@router.message(F.text.lower().startswith("!событие"), F.from_user.id.in_(ADMIN_IDS + MODERATOR_IDS))
-async def add_event(message: Message):
-    global event_counter
-    parts = message.text.split(maxsplit=3)
-    if len(parts) < 3:
-        await message.answer("❌ Формат: <code>!событие ДД.ММ [ЧЧ:ММ] Текст</code>", parse_mode=ParseMode.HTML)
+@router.message(F.text.regexp(_RE_EVENT_T), F.from_user.id.in_(STAFF))
+async def add_event_silent(message: Message):
+    body = message.text[len("!событие_т"):].strip()
+    await _add_event(message, body, announce=False)
+
+
+@router.message(F.text.regexp(_RE_EVENT_MODE), F.from_user.id.in_(STAFF))
+async def toggle_event_mode(message: Message):
+    parts = message.text.split()
+    if len(parts) < 2:
+        await message.answer("❌ Формат: <code>!событие_режим ID</code>", parse_mode=ParseMode.HTML)
+        return
+    ev_id = parts[1]
+    ev = events.get(ev_id)
+    if not ev:
+        await message.answer(f"⚠️ Событие с ID <code>{ev_id}</code> не найдено.", parse_mode=ParseMode.HTML)
         return
 
-    try:
-        date_str = parts[1]
-        # Проверяем, есть ли время в строке 2 (если там двоеточие)
-        has_time = ":" in parts[2]
-        if has_time:
-            if len(parts) < 4: raise ValueError
-            time_str = parts[2]
-            text = parts[3]
-            dt_str = f"{date_str}.{datetime.now().year} {time_str}"
-            target_dt = datetime.strptime(dt_str, "%d.%m.%Y %H:%M")
-        else:
-            time_str = "08:00"  # По умолчанию утро
-            text = " ".join(parts[2:])
-            dt_str = f"{date_str}.{datetime.now().year} {time_str}"
-            target_dt = datetime.strptime(dt_str, "%d.%m.%Y %H:%M")
+    was = ev.get("announce", True)
+    ev["announce"] = not was
 
-        # Ставим таймзону Новосибирска
-        target_dt = target_dt.replace(tzinfo=ZoneInfo("Asia/Novosibirsk"))
-        
-        # Если дата уже прошла в этом году, ставим на следующий
-        if target_dt < datetime.now(ZoneInfo("Asia/Novosibirsk")):
-            target_dt = target_dt.replace(year=target_dt.year + 1)
+    # При включении уведомлений для уже прошедшего события — не спамим
+    if ev["announce"] and ev["datetime"] <= datetime.now(NSK).timestamp():
+        ev["notified_day"] = True
+        ev["notified_hour"] = True
 
-        event_counter += 1
-        ev_id = str(event_counter)
-        
-        events[ev_id] = {
-            "text": text,
-            "datetime": target_dt.timestamp(),
-            "notified_day": False,
-            "notified_hour": False
-        }
-        await save_events()
+    await save_events()
 
-        await message.answer(f"✅ Событие добавлено!\nID: <code>{ev_id}</code>\nКогда: {target_dt.strftime('%d.%m.%Y %H:%M')}\nЧто: {text}", parse_mode=ParseMode.HTML)
-    except Exception:
-        await message.answer("❌ Ошибка формата. Пример: <code>!событие 20.11 18:00 Концерт</code>", parse_mode=ParseMode.HTML)
+    def label(v: bool) -> str:
+        return "📢 с уведомлением" if v else "🔕 без уведомления"
+
+    await message.answer(
+        f"✅ Режим события <code>{ev_id}</code> изменён.\n"
+        f"Было: {label(was)}\n"
+        f"Стало: {label(ev['announce'])}",
+        parse_mode=ParseMode.HTML
+    )
 
 
-@router.message(F.text.lower() == "!события")
+@router.message(F.text.regexp(_RE_EVENT), F.from_user.id.in_(STAFF))
+async def add_event_public(message: Message):
+    body = message.text[len("!событие"):].strip()
+    await _add_event(message, body, announce=True)
+
+
+@router.message(F.text.regexp(_RE_EVENTS_LIST))
 async def list_events(message: Message):
     if not events:
         await message.answer("📅 Ближайших событий нет.")
         return
 
-    now_ts = datetime.now(ZoneInfo("Asia/Novosibirsk")).timestamp()
-    # Фильтруем прошедшие и сортируем
-    actual_events = []
-    for ev_id, ev in events.items():
-        if ev["datetime"] > now_ts - 3600:  # Оставляем те, что прошли не более часа назад
-            actual_events.append((ev_id, ev))
-    
-    actual_events.sort(key=lambda x: x[1]["datetime"])
+    now_ts = datetime.now(NSK).timestamp()
+    actual = [(eid, ev) for eid, ev in events.items() if ev["datetime"] > now_ts - 3600]
+    actual.sort(key=lambda x: x[1]["datetime"])
 
-    if not actual_events:
+    if not actual:
         await message.answer("📅 Ближайших событий нет.")
         return
 
     lines = ["📅 <b>Ближайшие события:</b>\n"]
-    for ev_id, ev in actual_events:
-        dt = datetime.fromtimestamp(ev["datetime"], ZoneInfo("Asia/Novosibirsk"))
-        lines.append(f"• <code>{ev_id}</code> | <b>{dt.strftime('%d.%m %H:%M')}</b> — {ev['text']}")
-    
+    for ev_id, ev in actual:
+        dt = datetime.fromtimestamp(ev["datetime"], NSK)
+        marker = "•" if ev.get("announce", True) else "🔕"
+        lines.append(f"{marker} <code>{ev_id}</code> | <b>{dt.strftime('%d.%m %H:%M')}</b> — {ev['text']}")
     await message.answer("\n".join(lines), parse_mode=ParseMode.HTML)
 
 
-@router.message(F.text.lower().startswith("!удалить_событие"), F.from_user.id.in_(ADMIN_IDS))
+@router.message(F.text.regexp(_RE_EVENT_DEL), F.from_user.id.in_(STAFF))
 async def del_event(message: Message):
     parts = message.text.split()
     if len(parts) < 2:
         await message.answer("❌ Формат: <code>!удалить_событие ID</code>", parse_mode=ParseMode.HTML)
         return
-    
     ev_id = parts[1]
     if ev_id in events:
         events.pop(ev_id)
@@ -171,41 +268,54 @@ async def check_events_loop(bot):
     logging.info("📅 Цикл проверки событий запущен.")
     while True:
         try:
-            now = datetime.now(ZoneInfo("Asia/Novosibirsk"))
+            now = datetime.now(NSK)
             now_ts = now.timestamp()
             updated = False
 
             for ev_id, ev in list(events.items()):
+                # Тихое событие — не шлём ничего
+                if not ev.get("announce", True):
+                    continue
+
                 target_ts = ev["datetime"]
                 diff_hours = (target_ts - now_ts) / 3600
+                ev_dt = datetime.fromtimestamp(target_ts, NSK)
 
-                # 1. Напоминание за час (если до события осталось от 0.9 до 1.1 часа)
+                # 1. За час
                 if 0.9 <= diff_hours <= 1.1 and not ev.get("notified_hour"):
-                    await bot.send_message(
-                        CHANNEL_ID,
-                        f"🔔 <b>Напоминание:</b> через час начнется событие!\n\n📌 <b>{ev['text']}</b>\n🕒 В {datetime.fromtimestamp(target_ts, ZoneInfo('Asia/Novosibirsk')).strftime('%H:%M')}",
-                        parse_mode=ParseMode.HTML
-                    )
-                    ev["notified_hour"] = True
-                    updated = True
-
-                # 2. Напоминание в день события (в 08:00 утра)
-                elif now.hour == 8 and now.minute < 5 and not ev.get("notified_day"):
-                    # Проверяем, что событие именно сегодня
-                    ev_date = datetime.fromtimestamp(target_ts, ZoneInfo("Asia/Novosibirsk")).date()
-                    if ev_date == now.date():
+                    try:
                         await bot.send_message(
                             CHANNEL_ID,
-                            f"📅 <b>Доброе утро! Сегодня событие:</b>\n\n📌 <b>{ev['text']}</b>\n🕒 В {datetime.fromtimestamp(target_ts, ZoneInfo('Asia/Novosibirsk')).strftime('%H:%M')}",
+                            f"🔔 <b>Напоминание:</b> через час начнется событие!\n\n"
+                            f"📌 <b>{ev['text']}</b>\n"
+                            f"🕒 В {ev_dt.strftime('%H:%M')}",
+                            parse_mode=ParseMode.HTML
+                        )
+                        ev["notified_hour"] = True
+                        updated = True
+                    except Exception as e:
+                        logging.error(f"Ошибка напоминания за час (id={ev_id}): {e}")
+
+                # 2. Утром в день события (после 08:00, ещё не слали, событие ещё впереди)
+                elif (now.hour >= 8 and not ev.get("notified_day")
+                      and ev_dt.date() == now.date() and target_ts > now_ts):
+                    try:
+                        await bot.send_message(
+                            CHANNEL_ID,
+                            f"📅 <b>Доброе утро! Сегодня событие:</b>\n\n"
+                            f"📌 <b>{ev['text']}</b>\n"
+                            f"🕒 В {ev_dt.strftime('%H:%M')}",
                             parse_mode=ParseMode.HTML
                         )
                         ev["notified_day"] = True
                         updated = True
+                    except Exception as e:
+                        logging.error(f"Ошибка утреннего напоминания (id={ev_id}): {e}")
 
             if updated:
                 await save_events()
 
         except Exception as e:
             logging.error(f"Ошибка в цикле событий: {e}")
-        
+
         await asyncio.sleep(60)
