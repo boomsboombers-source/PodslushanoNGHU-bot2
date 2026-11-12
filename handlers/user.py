@@ -32,8 +32,9 @@ async def get_signed_signature(user) -> str:
     """Формирует подпись автора для неанонимных сообщений."""
     username = await get_username_by_id_db(user.id)
     signature = f"\n\n👤 <b>Автор:</b> {esc(user.full_name)}"
-    if username != "нет username":
-        signature += f" (@{esc(username.lstrip('@'))})"
+    if username and username != "нет username":
+        # get_username_by_id_db возвращает "@name" или "нет username"
+        signature += f" ({esc(username)})"
     return signature + "\n"
 
 @user_router.message(CommandStart())
