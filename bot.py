@@ -97,9 +97,11 @@ async def main():
 
     async def _birthday_loop():
         NSK_TZ = ZoneInfo("Asia/Novosibirsk")
+        from plugins.birthdays import published_today
         while True:
             now = datetime.now(NSK_TZ)
-            if now.hour == 8 and now.minute < 5:
+            today_full = now.strftime("%d.%m.%Y")
+            if now.hour >= 8 and today_full not in published_today:
                 try:
                     await auto_congratulate(bot)
                 except Exception as e:
