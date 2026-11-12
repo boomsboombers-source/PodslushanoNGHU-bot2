@@ -7,7 +7,7 @@ from aiogram import Router, F
 from aiogram.types import Message, FSInputFile, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
 from aiogram.filters import CommandStart
 from aiogram.enums import ParseMode, ContentType
-from config import CHANNEL_ID, LOG_CHAT_ID, WELCOME_IMAGE, SCHEDULE_FILE, SCHEDULE2_FILE, ADMIN_IDS
+from config import CHANNEL_ID, LOG_CHAT_ID, WELCOME_IMAGE, SCHEDULE_FILE, SCHEDULE2_FILE, ADMIN_IDS, MODERATOR_IDS, STAFF_IDS
 from services.storage import (
     save_user, save_username, active_replies, mark_replies_dirty, check_mute,
     active_replies_lock, save_log_msg_id, get_log_msg_id
@@ -17,14 +17,26 @@ from services.database import log_message_db, get_username_by_id_db
 
 user_router = Router()
 
-def get_main_keyboard():
+def get_main_keyboard(user_id: int = None, mode: str = "default"):
+    # Базовые ряды (всегда на месте)
+    rows = [
+        [KeyboardButton(text="📅 События"), KeyboardButton(text="📋 Команды")],
+        [KeyboardButton(text="📌 Замены"), KeyboardButton(text="📅 Репетиции")],
+    ]
+    
+    # Добавляем новый ряд СВЕРХУ в зависимости от режима
+    if mode == "admin" and user_id in ADMIN_IDS:
+        rows.insert(0, [
+            KeyboardButton(text="🛡 Модер-панель"), 
+            KeyboardButton(text="🛠 Админ-панель")
+        ])
+    elif mode == "moder" and user_id in STAFF_IDS:
+        rows.insert(0, [
+            KeyboardButton(text="🛡 Модер-панель")
+        ])
+        
     return ReplyKeyboardMarkup(
-        keyboard=[
-            # 1-й ряд: События + Команды
-            [KeyboardButton(text="📅 События"), KeyboardButton(text="📋 Команды")],
-            # 2-й ряд: Замены + Репетиции (бывшее Расписание)
-            [KeyboardButton(text="📌 Замены"), KeyboardButton(text="📅 Репетиции")],
-        ],
+        keyboard=rows,
         resize_keyboard=True, is_persistent=True,
         input_field_placeholder="Напиши сообщение для канала..."
     )
@@ -43,43 +55,71 @@ async def cmd_start(message: Message):
     await save_user(message.from_user.id)
     await save_username(message.from_user.username, message.from_user.id)
 
-    if message.text and "reply" in message.text:
-        await message.answer("✍️ <b>Отлично!</b> Напиши или прикрепи то, что хочешь отправить в ответ на пост:", parse_mode=ParseMode.HTML, reply_markup=get_main_keyboard())
+    # 1. Определяем режим клавиатуры на основе /start xxx
+    text_lower = (message.text or "").lower()
+    args = text_lower.split(maxsplit=1)
+    start_arg = args[1] if len(args) > 1 else ""
+    mode = "default"
+
+    if start_arg == "admin":
+        if message.from_user.id not in ADMIN_IDS:
+            await message.answer("⛔ У вас нет доступа к админ-панели.")
+            return
+        mode = "admin"
+    elif start_arg == "moder":
+        if message.from_user.id not in STAFF_IDS:
+            await message.answer("⛔ У вас нет доступа к панели модератора.")
+            return
+        mode = "moder"
+
+    # 2. Обработка reply и new
+    if start_arg == "reply":
+        await message.answer("✍️ <b>Отлично!</b> Напиши или прикрепи то, что хочешь отправить в ответ на пост:", parse_mode=ParseMode.HTML, reply_markup=get_main_keyboard(message.from_user.id, mode=mode))
         return
-    if message.text and "new" in message.text:
-        await message.answer("📩 <b>Напиши или прикрепи сообщение, которое хочешь отправить в канал анонимно:</b>", parse_mode=ParseMode.HTML, reply_markup=get_main_keyboard())
+    if start_arg == "new":
+        await message.answer("📩 <b>Напиши или прикрепи сообщение, которое хочешь отправить в канал анонимно:</b>", parse_mode=ParseMode.HTML, reply_markup=get_main_keyboard(message.from_user.id, mode=mode))
         return
 
+    # 3. Отправка приветствия
     if not os.path.exists(WELCOME_IMAGE):
-        await message.answer("👋 Привет! Бот работает.", reply_markup=get_main_keyboard())
-        return
+        await message.answer("👋 Привет! Бот работает.", reply_markup=get_main_keyboard(message.from_user.id, mode=mode))
+    else:
+        try:
+            photo = FSInputFile(WELCOME_IMAGE)
+            await message.answer_photo(
+                photo=photo,
+                caption=(
+                    "👋 <b>Привет!</b>\n\n"
+                    "Этот бот — официальный анонимный канал связи с <b>Подслушано НГХУ</b>.\n"
+                    "Мы публикуем твои мысли, новости и приколы без указания авторства.\n\n"
+                    "📎 <b>Что можно отправить?</b>\n"
+                    "Бот принимает <b>абсолютно любой контент</b>:\n"
+                    "• 📝 Текстовые сообщения\n"
+                    "• 📸 Фотографии (можно с подписями)\n"
+                    "• 🎥 Видео и гифки\n"
+                    "• 🎵 Аудио (музыка) и 🎙 голосовые (ГС)\n"
+                    "• 🟢 Видео-кружочки\n"
+                    "• 🖼 Стикеры и документы (файлы)\n\n"
+                    "⚙️ <b>Основные команды вы можете посмотреть нажав кнопку внизу экрана</b>\n\n"
+                    "💬 <b>Анонимные ответы</b>\n"
+                    "Под каждым постом в канале есть кнопка <b>«Ответить»</b>. Нажми, чтобы написать анонимный ответ (можно с фото или стикерами).\n\n"
+                    "⚠️ <i><b>За оскорбления, травлю и любые другие конфликтные ситуации администрация ответственности не несет! Пожалуйста, соблюдай правила приличия и не спамь.</b></i>"
+                ),
+                parse_mode=ParseMode.HTML, 
+                reply_markup=get_main_keyboard(message.from_user.id, mode=mode)
+            )
+        except Exception as e:
+            logging.error(f"Ошибка /start: {e}")
+            await message.answer("👋 Привет! Бот работает.", reply_markup=get_main_keyboard(message.from_user.id, mode=mode))
 
-    try:
-        photo = FSInputFile(WELCOME_IMAGE)
-        await message.answer_photo(
-            photo=photo,
-            caption=(
-                "👋 <b>Привет!</b>\n\n"
-                "Этот бот — официальный анонимный канал связи с <b>Подслушано НГХУ</b>.\n"
-                "Мы публикуем твои мысли, новости и приколы без указания авторства.\n\n"
-                "📎 <b>Что можно отправить?</b>\n"
-                "Бот принимает <b>абсолютно любой контент</b>:\n"
-                "• 📝 Текстовые сообщения\n"
-                "• 📸 Фотографии (можно с подписями)\n"
-                "• 🎥 Видео и гифки\n"
-                "• 🎵 Аудио (музыка) и 🎙 голосовые (ГС)\n"
-                "• 🟢 Видео-кружочки\n"
-                "• 🖼 Стикеры и документы (файлы)\n\n"
-                "⚙️ <b>Основные команды вы можете посмотреть нажав кнопку внизу экрана</b>\n\n"
-                "💬 <b>Анонимные ответы</b>\n"
-                "Под каждым постом в канале есть кнопка <b>«Ответить»</b>. Нажми, чтобы написать анонимный ответ (можно с фото или стикерами).\n\n"
-                "⚠️ <i><b>За оскорбления, травлю и любые другие конфликтные ситуации администрация ответственности не несет! Пожалуйста, соблюдай правила приличия и не спамь.</b></i>"
-            ),
-            parse_mode=ParseMode.HTML, reply_markup=get_main_keyboard()
-        )
-    except Exception as e:
-        logging.error(f"Ошибка /start: {e}")
-        await message.answer("👋 Привет! Бот работает.", reply_markup=get_main_keyboard())
+    # 4. Показываем панели, если это /start admin или /start moder
+    if mode == "admin":
+        from handlers.admin import admin_panel
+        await admin_panel(message)
+    elif mode == "moder":
+        from handlers.admin import moderator_panel
+        await moderator_panel(message)
+
 
 @user_router.message(F.text.in_(["📅 Репетиции", "📅 Расписание репетиций"]))
 async def show_schedule(message: Message):
@@ -102,6 +142,7 @@ async def show_schedule(message: Message):
         logging.error(f"Ошибка расписания: {e}")
         await message.answer("❌ Не удалось загрузить расписание.")
 
+
 @user_router.message(F.text == "📌 Замены")
 async def show_schedule2(message: Message):
     if not os.path.exists(SCHEDULE2_FILE):
@@ -117,6 +158,7 @@ async def show_schedule2(message: Message):
     except Exception as e:
         logging.error(f"Ошибка расписания изменений: {e}")
         await message.answer("❌ Не удалось загрузить изменения в расписании.")
+
 
 @user_router.message(F.text == "📋 Команды")
 async def show_commands(message: Message):
@@ -145,6 +187,23 @@ async def show_commands(message: Message):
         parse_mode=ParseMode.HTML
     )
 
+
+@user_router.message(F.text == "🛠 Админ-панель")
+async def open_admin_panel_kb(message: Message):
+    if message.from_user.id not in ADMIN_IDS:
+        return
+    from handlers.admin import admin_panel
+    await admin_panel(message)
+
+
+@user_router.message(F.text == "🛡 Модер-панель")
+async def open_moder_panel_kb(message: Message):
+    if message.from_user.id not in STAFF_IDS:
+        return
+    from handlers.admin import moderator_panel
+    await moderator_panel(message)
+
+
 @user_router.callback_query(F.data == "reply_to_post")
 async def ask_for_reply(callback: CallbackQuery):
     async with active_replies_lock:
@@ -154,6 +213,7 @@ async def ask_for_reply(callback: CallbackQuery):
         await callback.answer(url=f"https://t.me/PodslushanoNGHU_bot?start=reply")
     except Exception:
         await callback.answer("Открой бота в личных сообщениях!", show_alert=True)
+
 
 @user_router.message(F.content_type.in_([
     ContentType.TEXT, ContentType.PHOTO, ContentType.VIDEO, ContentType.AUDIO,
@@ -295,6 +355,7 @@ async def handle_all_messages(message: Message):
     channel_kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="📢 Перейти к сообщению", url=msg_link)]])
     answer_text = "✅ Неанонимное сообщение отправлено в канал." if is_signed else "✅ Сообщение отправлено в канал анонимно."
     await message.answer(answer_text, reply_markup=channel_kb)
+
 
 @user_router.message()
 async def handle_other_messages(message: Message):
