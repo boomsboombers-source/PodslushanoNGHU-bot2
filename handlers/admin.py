@@ -5,8 +5,6 @@ import asyncio
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
-import aiosqlite
-
 from aiogram import Router, F
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.filters import Command
@@ -28,8 +26,6 @@ from services import plugin_registry
 from services.database import get_user_info_db, get_top_users_db
 
 admin_router = Router()
-
-DB_PATH = os.path.join(DATA_DIR, "bot.db")
 
 # ==============================================================================
 # ================= ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ====================================
@@ -189,6 +185,10 @@ async def admin_menu_handler(callback: CallbackQuery):
     elif action == "settings":
         core = (
             "📚 <b>Полная шпаргалка по командам</b>\n\n"
+            "⚙️ <b>Основное (панели)</b>\n"
+            "• <code>/start admin</code> — вызвать меню с кнопками <b>«🛡 Модер-панель»</b> и <b>«🛠 Админ-панель»</b>.\n"
+            "• <code>/start moder</code> — вызвать меню с кнопкой <b>«🛡 Модер-панель»</b>.\n"
+            "• Кнопки <b>«🛡 Модер-панель»</b> и <b>«🛠 Админ-панель»</b> внизу экрана — быстрый вызов панелей.\n\n"
             "📅 <b>Расписание</b>\n"
             "• <code>!расписание</code> — <i>прикрепи фото расписания репетиций, в подписи напиши эту команду.</i>\n"
             "• <code>!замены</code> — <i>прикрепи фото замен, в подписи напиши эту команду.</i>\n\n"
@@ -213,8 +213,9 @@ async def admin_menu_handler(callback: CallbackQuery):
             "• <code>!топ</code> — топ-10 самых активных.\n"
         )
         plugins_block = _render_plugins_menu(for_moder=False)
-        text = core + (plugins_block if plugins_block else "") + "\n\n🔌 <b>Плагины</b>\n• Кнопка «🔌 Плагины» в админ-панели — список подключённых плагинов и их команд."
+        text = core + (plugins_block if plugins_block else "")
         await callback.message.answer(text, parse_mode=ParseMode.HTML)
+    await callback.answer()
 
 # ==============================================================================
 # ================= АДМИНСКИЕ КОМАНДЫ (ТЕКСТОВЫЕ) ==============================
@@ -460,7 +461,7 @@ async def moderator_panel(message: Message):
     if message.from_user.id not in MODERATOR_IDS and message.from_user.id not in ADMIN_IDS: return
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📚 Команды модератора", callback_data="moder_settings")],
-        [InlineKeyboardButton(text="📖 Инструкция", callback_data="moder_guide")], # <--- Новая кнопка
+        [InlineKeyboardButton(text="📖 Инструкция", callback_data="moder_guide")],
     ])
     await message.answer("🛠 <b>Панель модератора</b>\nВыбери действие:", reply_markup=kb, parse_mode=ParseMode.HTML)
 
@@ -470,6 +471,9 @@ async def moderator_settings(callback: CallbackQuery):
 
     core = (
         "📚 <b>Команды модератора</b>\n\n"
+        "⚙️ <b>Основное</b>\n"
+        "• <code>/start moder</code> — вызвать меню с кнопкой <b>«🛡 Модер-панель»</b> внизу экрана.\n"
+        "• Кнопка <b>«🛡 Модер-панель»</b> — быстрый вызов этой панели.\n\n"
         "📅 <b>Расписание</b>\n"
         "• <code>!расписание</code> — обновить фото расписания.\n"
         "• <code>!замены</code> — обновить фото замен.\n\n"
@@ -490,6 +494,12 @@ async def moderator_guide(callback: CallbackQuery):
     await callback.message.answer(
         "📖 <b>Инструкция для модератора</b>\n\n"
         "Твоя задача — следить за порядком в канале и помогать пользователям, не раскрывая лишних данных. А так же обновлять расписание репетиций и замен!\n\n"
+        
+        "🔹 <b>Быстрый доступ к панели</b>\n"
+        "Чтобы открыть панель модератора, ты можешь:\n"
+        "1. Написать боту <code>/start moder</code> (внизу появится кнопка <b>«🛡 Модер-панель»</b>).\n"
+        "2. Или просто нажать на эту кнопку, если она уже есть на клавиатуре.\n"
+        "3. Или написать команду <code>/moder</code> (или <code>!moder</code>).\n\n"
         
         "🔹 <b>Обновление расписания</b>\n"
         "Чтобы обновить расписание или замены, отправь боту <b>фотографию</b> (расписание или замены) и в поле <b>подписи к фото</b> напиши нужную команду:\n"
