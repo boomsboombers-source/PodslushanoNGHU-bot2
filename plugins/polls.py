@@ -1,8 +1,16 @@
 # plugins/polls.py
 """
 Плагин «Опросы от пользователей».
+
+Формат создания (многострочный):
+  !опрос
+  Вопрос: Какой фильм лучше?
+  -Интерстеллар
+  •Начало
+  * Матрица
+
 Команды:
-  !опрос Вопрос | Вариант1 | Вариант2 | ... — предложить опрос (все, с модерацией)
+  !опрос — предложить опрос (все, с превью и модерацией)
   !мои_опросы — список своих опросов (все)
   !опросы — список активных опросов (админ)
 """
@@ -22,12 +30,14 @@ from config import CHANNEL_ID, LOG_CHAT_ID, ADMIN_IDS, DATA_DIR
 
 PLUGIN_INFO = {
     "name": "Опросы от пользователей",
+    "icon": "📊",
     "description": "Пользователи предлагают опросы, админ модерирует, бот публикует в канал",
     "commands": [
-        ("!опрос Вопрос | В1 | В2 | ...", "предложить опрос (все)"),
+        ("!опрос", "предложить опрос (все)"),
         ("!мои_опросы", "список своих опросов (все)"),
         ("!опросы", "список активных опросов (админ)"),
     ],
+    "commands_moder": [],
 }
 
 router = Router(name="polls")
@@ -35,9 +45,14 @@ router = Router(name="polls")
 POLLS_FILE = os.path.join(DATA_DIR, "polls.json")
 os.makedirs(DATA_DIR, exist_ok=True)
 
-polls = {}  # {"poll_id": {"author": str, "question": str, "options": [...], "status": "pending"|"approved"|"rejected", "channel_msg_id": int|None}}
+polls = {}  # {"poll_id": {...}}
 polls_lock = asyncio.Lock()
 _poll_counter = 0
+
+# Черновики: {user_id: {"question": str, "options": [...]}}
+pending_polls = {}
+
+_VARIANT_MARKERS = ("-", "•", "*")
 
 
 def load_polls():
@@ -66,17 +81,36 @@ async def save_polls():
 load_polls()
 
 
-def parse_poll(text: str):
-    """'!опрос Вопрос | В1 | В2' -> (question, [options]) или None."""
-    body = text[len("!опрос"):].strip()
-    parts = [p.strip() for p in body.split("|")]
-    if len(parts) < 3:
+def parse_poll_multiline(body: str):
+    """
+    body — текст после '!опрос'.
+    Возвращает (question, options) или None.
+    """
+    lines = [ln for ln in body.splitlines() if ln.strip()]
+    if len(lines) < 3:
         return None
-    question = parts[0]
-    options = [p for p in parts[1:] if p]
+
+    question = lines[0].strip()
+    if question.lower().startswith("вопрос:"):
+        question = question[len("вопрос:"):].strip()
+    if not question or len(question) > 255:
+        return None
+
+    options = []
+    for ln in lines[1:]:
+        s = ln.strip()
+        if not s:
+            continue
+        if s[0] not in _VARIANT_MARKERS:
+            continue  # строки без маркера игнорируем
+        opt = s[1:].strip()
+        if not opt:
+            continue
+        if len(opt) > 100:
+            return None
+        options.append(opt)
+
     if len(options) < 2 or len(options) > 10:
-        return None
-    if len(question) > 255 or any(len(o) > 100 for o in options):
         return None
     return question, options
 
@@ -94,52 +128,111 @@ async def list_polls(message: Message):
     await message.answer("\n".join(lines), parse_mode=ParseMode.HTML)
 
 
-
-@router.message(F.text.lower().startswith("!опрос"), F.chat.type == "private")
+@router.message(F.text.lower() == "!опрос", F.chat.type == "private")
 async def suggest_poll(message: Message):
-    global _poll_counter
+    await message.answer(
+        "📊 <b>Создание опроса</b>\n\n"
+        "Отправь команду и данные так:\n\n"
+        "<code>!опрос\n"
+        "Вопрос: Какой фильм лучше?\n"
+        "-Интерстеллар\n"
+        "-Начало\n"
+        "-Матрица</code>\n\n"
+        "• <code>Вопрос:</code> — необязательно\n"
+        "• Варианты — с маркером <code>-</code>, <code>•</code> или <code>*</code>\n"
+        "• От 2 до 10 вариантов\n"
+        "• Вопрос до 255 символов, вариант до 100",
+        parse_mode=ParseMode.HTML
+    )
 
-    parsed = parse_poll(message.text)
+
+@router.message(F.text.lower().startswith("!опрос\n"), F.chat.type == "private")
+async def suggest_poll_multiline(message: Message):
+    body = message.text[len("!опрос"):]
+    parsed = parse_poll_multiline(body)
     if not parsed:
         await message.answer(
-            "❌ Формат: <code>!опрос Вопрос | Вариант1 | Вариант2</code>\n"
-            "• от 2 до 10 вариантов\n"
-            "• вопрос до 255 символов, вариант до 100",
+            "❌ Не удалось разобрать опрос.\n"
+            "Формат: <code>!опрос</code> с новой строки, затем вопрос и варианты с <code>-</code>/<code>•</code>/<code>*</code>.\n"
+            "От 2 до 10 вариантов.",
             parse_mode=ParseMode.HTML
         )
         return
 
     question, options = parsed
+    pending_polls[message.from_user.id] = {"question": question, "options": options}
+
+    preview_lines = [f"❓ <b>{question}</b>"]
+    for i, o in enumerate(options, 1):
+        preview_lines.append(f"{i}. {o}")
+    preview = "📊 <b>Проверь свой опрос:</b>\n\n" + "\n".join(preview_lines) + "\n\nОтправить на модерацию?"
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Отправить", callback_data=f"poll_confirm_{message.from_user.id}")],
+        [InlineKeyboardButton(text="❌ Отмена", callback_data=f"poll_cancel_{message.from_user.id}")],
+    ])
+    await message.answer(preview, parse_mode=ParseMode.HTML, reply_markup=kb)
+
+
+@router.callback_query(F.data.startswith("poll_confirm_"))
+async def confirm_poll(callback: CallbackQuery):
+    global _poll_counter
+    uid = int(callback.data.replace("poll_confirm_", ""))
+    if callback.from_user.id != uid:
+        return await callback.answer("⛔ Это не твой опрос", show_alert=True)
+
+    draft = pending_polls.pop(uid, None)
+    if not draft:
+        return await callback.answer("⚠️ Черновик уже обработан", show_alert=True)
+
     _poll_counter += 1
     poll_id = f"p{_poll_counter}"
-
     polls[poll_id] = {
-        "author": str(message.from_user.id),
-        "question": question,
-        "options": options,
+        "author": str(uid),
+        "question": draft["question"],
+        "options": draft["options"],
         "status": "pending",
         "channel_msg_id": None,
         "created": datetime.now().isoformat(),
     }
     await save_polls()
 
-    # Отправляем в лог-группу на модерацию
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✅ Опубликовать", callback_data=f"poll_approve_{poll_id}")],
         [InlineKeyboardButton(text="❌ Отклонить", callback_data=f"poll_reject_{poll_id}")],
     ])
     text = (
         f"📊 <b>Новый опрос на модерации</b>\n\n"
-        f"👤 Автор: <code>{message.from_user.id}</code>\n"
-        f"❓ <b>{question}</b>\n\n" +
-        "\n".join(f"• {o}" for o in options)
+        f"👤 Автор: <code>{uid}</code>\n"
+        f"❓ <b>{draft['question']}</b>\n\n" +
+        "\n".join(f"• {o}" for o in draft["options"])
     )
     try:
-        await message.bot.send_message(LOG_CHAT_ID, text, parse_mode=ParseMode.HTML, reply_markup=kb)
+        await callback.bot.send_message(LOG_CHAT_ID, text, parse_mode=ParseMode.HTML, reply_markup=kb)
     except Exception as e:
         logging.error(f"Не удалось отправить опрос на модерацию: {e}")
 
-    await message.answer(f"✅ Опрос отправлен на модерацию. ID: <code>{poll_id}</code>", parse_mode=ParseMode.HTML)
+    try:
+        await callback.message.edit_text(
+            f"✅ Опрос отправлен на модерацию. ID: <code>{poll_id}</code>",
+            parse_mode=ParseMode.HTML
+        )
+    except TelegramBadRequest:
+        pass
+    await callback.answer("Отправлено")
+
+
+@router.callback_query(F.data.startswith("poll_cancel_"))
+async def cancel_poll(callback: CallbackQuery):
+    uid = int(callback.data.replace("poll_cancel_", ""))
+    if callback.from_user.id != uid:
+        return await callback.answer("⛔ Это не твой опрос", show_alert=True)
+    pending_polls.pop(uid, None)
+    try:
+        await callback.message.edit_text("❌ Отправка опроса отменена.")
+    except TelegramBadRequest:
+        pass
+    await callback.answer("Отменено")
 
 
 @router.message(F.text.lower() == "!мои_опросы", F.chat.type == "private")
@@ -169,7 +262,6 @@ async def approve_poll(callback: CallbackQuery):
     if p["status"] != "pending":
         return await callback.answer(f"⚠️ Уже обработан ({p['status']})", show_alert=True)
 
-    # Публикуем нативный опрос в канал
     try:
         sent = await callback.bot.send_poll(
             chat_id=CHANNEL_ID,
