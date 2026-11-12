@@ -18,6 +18,7 @@ def register(info: dict) -> None:
     if any(p.get("name") == name for p in _PLUGINS):
         logging.warning(f"plugin_registry: дубль плагина '{name}' — пропущен")
         return
+    info.setdefault("icon", "🔌")
     _PLUGINS.append(info)
     logging.info(f"plugin_registry: зарегистрирован '{name}'")
 
