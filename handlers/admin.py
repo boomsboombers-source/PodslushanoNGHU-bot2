@@ -37,14 +37,13 @@ DB_PATH = os.path.join(DATA_DIR, "bot.db")
 
 async def _get_stats_from_db() -> tuple[int, int]:
     """Возвращает (всего сообщений, сообщений сегодня)."""
+    from services.database import db
     today_str = datetime.now(ZoneInfo("Asia/Novosibirsk")).strftime("%d.%m.%Y")
     try:
-        async with aiosqlite.connect(DB_PATH) as db:
-            async with db.execute("SELECT COUNT(*) FROM messages") as cur:
-                total = (await cur.fetchone())[0]
-            
-            async with db.execute("SELECT COUNT(*) FROM messages WHERE date LIKE ?", (f"{today_str}%",)) as cur:
-                today = (await cur.fetchone())[0]
+        async with db.execute("SELECT COUNT(*) FROM messages") as cur:
+            total = (await cur.fetchone())[0]
+        async with db.execute("SELECT COUNT(*) FROM messages WHERE date LIKE ?", (f"{today_str}%",)) as cur:
+            today = (await cur.fetchone())[0]
         return total, today
     except Exception as e:
         logging.error(f"Ошибка чтения статистики из БД: {e}")
@@ -82,6 +81,30 @@ async def _build_stats_text(is_admin: bool = False) -> str:
         f"📅 Сообщений сегодня: <b>{today_msgs}</b>"
         f"{muted_list}"
     )
+
+def _plugins_sorted() -> list[dict]:
+    return sorted(plugin_registry.get_all(), key=lambda p: p.get("name", ""))
+
+
+def _render_plugins_menu(for_moder: bool) -> str:
+    """Собирает блоки плагинов для меню команд."""
+    lines = []
+    for p in _plugins_sorted():
+        if for_moder:
+            if "commands_moder" in p:
+                cmds = p["commands_moder"]
+            else:
+                cmds = p.get("commands", [])
+        else:
+            cmds = p.get("commands", [])
+        if not cmds:
+            continue
+        icon = p.get("icon", "🔌")
+        name = p.get("name", "Без названия")
+        lines.append(f"\n{icon} <b>{name}</b>")
+        for cmd, desc in cmds:
+            lines.append(f"• <code>{esc(cmd)}</code> — {esc(desc)}")
+    return "\n".join(lines)
 
 # ==============================================================================
 # ================= АДМИН-ПАНЕЛЬ ===============================================
@@ -164,7 +187,7 @@ async def admin_menu_handler(callback: CallbackQuery):
             )
 
     elif action == "settings":
-        await callback.message.answer(
+        core = (
             "📚 <b>Полная шпаргалка по командам</b>\n\n"
             "📅 <b>Расписание</b>\n"
             "• <code>!расписание</code> — <i>прикрепи фото расписания репетиций, в подписи напиши эту команду.</i>\n"
@@ -187,12 +210,11 @@ async def admin_menu_handler(callback: CallbackQuery):
             "• <code>!очистить_ответы</code> — сброс ожиданий.\n\n"
             "🕵️ <b>Аналитика (по базе данных)</b>\n"
             "• <code>!кто [ID|@username]</code> — узнать инфу о пользователе.\n"
-            "• <code>!топ</code> — топ-10 самых активных.\n\n"
-            "🔌 <b>Плагины</b>\n"
-            "• Кнопка «🔌 Плагины» в админ-панели — список подключённых плагинов и их команд.",
-            parse_mode=ParseMode.HTML
+            "• <code>!топ</code> — топ-10 самых активных.\n"
         )
-    await callback.answer()
+        plugins_block = _render_plugins_menu(for_moder=False)
+        text = core + (plugins_block if plugins_block else "") + "\n\n🔌 <b>Плагины</b>\n• Кнопка «🔌 Плагины» в админ-панели — список подключённых плагинов и их команд."
+        await callback.message.answer(text, parse_mode=ParseMode.HTML)
 
 # ==============================================================================
 # ================= АДМИНСКИЕ КОМАНДЫ (ТЕКСТОВЫЕ) ==============================
@@ -445,28 +467,20 @@ async def moderator_panel(message: Message):
 @admin_router.callback_query(F.data == "moder_settings")
 async def moderator_settings(callback: CallbackQuery):
     if callback.from_user.id not in MODERATOR_IDS and callback.from_user.id not in ADMIN_IDS: return
-    await callback.message.answer(
+
+    core = (
         "📚 <b>Команды модератора</b>\n\n"
         "📅 <b>Расписание</b>\n"
         "• <code>!расписание</code> — обновить фото расписания.\n"
         "• <code>!замены</code> — обновить фото замен.\n\n"
         "🛡 <b>Сообщение от модератора</b>\n"
         "• <code>!мдс [текст]</code> — опубликовать сообщение с пометкой «Сообщение от модератора».\n\n"
-        "🎂 <b>Дни рождения</b>\n"
-        "• <code>!др_добавить ID ДД.ММ</code> — добавить/изменить ДР.\n"
-        "• <code>!др_сегодня</code> — кто празднует сегодня.\n"
-        "• <code>!др_список</code> — все ДР.\n"
-        "• <code>!др_поиск ДД.ММ</code> — поиск по дате/месяцу.\n\n"
-        "🎨 <b>Конкурс</b>\n"
-        "• <code>!конкурс_статус</code> — краткий статус конкурса.\n\n"
-        "📅 <b>События</b>\n"
-        "• <code>!событие ДД.ММ [ЧЧ:ММ] Текст</code> — добавить событие и напоминания.\n"
-        "• <code>!событие_т ДД.ММ [ЧЧ:ММ] Текст</code> — добавить событие без напоминания.\n"
-        "• <code>!события</code> — список ближайших событий (доступно всем).\n"
-        "• <code>!удалить_событие ID</code> — удалить событие (только админ).\n"
-        "• <code>!событие_режим ID</code> — переключить режим напоминаний у события.",
-        parse_mode=ParseMode.HTML
+        "📊 <b>Статистика</b>\n"
+        "• <code>!статистика</code> — общая статистика.\n"
     )
+    plugins_block = _render_plugins_menu(for_moder=True)
+    text = core + (plugins_block if plugins_block else "")
+    await callback.message.answer(text, parse_mode=ParseMode.HTML)
     await callback.answer()
 
 @admin_router.callback_query(F.data == "moder_guide")
@@ -494,9 +508,9 @@ async def moderator_guide(callback: CallbackQuery):
 
         "🔹 <b>События</b>\n"
         "Ты можешь добавлять события в общий календарь:\n"
-        "• <code>!событие ...</code> — с напоминанием в канал.\n"
-        "• <code>!событие_т ...</code> — без напоминания (тихо).\n"
-        "Переключить режим — <code>!событие_режим ID</code>, удалить — <code>!удалить_событие ID</code>.\n"
+        "• <code>!событие [Само событие]</code> — с напоминанием в канал.\n"
+        "• <code>!событие_т [Само событие]</code> — без напоминания (тихо).\n"
+        "Переключить режим (тихий, с уведомлением в канал) — <code>!событие_режим ID</code>, удалить — <code>!удалить_событие ID</code>.\n"
         "Список — <code>!события</code>.\n\n"
         
         "🔹 <b>Дни рождения</b>\n"
