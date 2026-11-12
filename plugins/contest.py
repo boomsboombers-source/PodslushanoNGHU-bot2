@@ -6,7 +6,7 @@
   !завершить_конкурс — завершить приём и опубликовать работы (админ)
   !дополнить_вариант — добавить работу в идущее голосование (админ, фото/документ с подписью)
   !результаты        — опубликовать результаты в канал (админ)
-  !конкурс_статус    — краткий статус конкурса (админ, модератор)
+  !конкурс_статус    — краткий статус конкурса (админ)
   !конкурс_сброс     — полный сброс состояния конкурса (админ, с подтверждением)
   !конкурс           — отправить фото на конкурс (все)
 """
@@ -29,15 +29,19 @@ from config import CHANNEL_ID, LOG_CHAT_ID, ADMIN_IDS, MODERATOR_IDS, DATA_DIR
 
 PLUGIN_INFO = {
     "name": "Конкурс аватарок ТГК",
+    "icon": "🎨",
     "description": "Конкурс на новую аватарку канала с голосованием и сменой голоса",
     "commands": [
         ("!начать_конкурс", "запустить конкурс (админ; добавьте «бот» для аватарки бота)"),
         ("!завершить_конкурс", "завершить приём и опубликовать работы (админ)"),
         ("!дополнить_вариант", "добавить работу в идущее голосование (админ)"),
         ("!результаты", "опубликовать результаты в канал (админ)"),
-        ("!конкурс_статус", "краткий статус конкурса (админ, модератор)"),
+        ("!конкурс_статус", "краткий статус конкурса (админ)"),
         ("!конкурс_сброс", "полный сброс состояния конкурса (админ)"),
         ("!конкурс", "отправить фото на конкурс (все)"),
+    ],
+    "commands_moder": [
+        ("!конкурс_статус", "краткий статус конкурса (админ, модер)"),
     ],
 }
 
@@ -256,7 +260,7 @@ async def end_contest(message: Message):
         await message.answer(f"✅ Опубликовано {published_count} работ. Теперь участники могут голосовать!")
 
 
-@router.message((F.photo | F.document) & F.caption.lower().startswith("!дополнить_вариант"), F.from_user.id.in_(ADMIN_IDS))
+@router.message((F.photo | F.document) & F.caption & F.caption.lower().startswith("!дополнить_вариант"), F.from_user.id.in_(ADMIN_IDS))
 async def add_late_entry(message: Message):
     """Добавляет работу в идущее голосование (после !завершить_конкурс, до !результаты)."""
     global contest_entries
@@ -468,7 +472,7 @@ async def contest_help(message: Message):
     )
 
 
-@router.message(F.photo & F.caption.lower().regexp(r"^!конкурс(\s|$)"), F.chat.type == "private")
+@router.message(F.photo & F.caption & F.caption.lower().regexp(r"^!конкурс(\s|$)"), F.chat.type == "private")
 async def handle_contest_photo(message: Message):
     global contest_entries
 
@@ -505,7 +509,7 @@ async def handle_contest_photo(message: Message):
         logging.error(f"Не удалось уведомить лог-группу о конкурсе: {e}")
 
 
-@router.message(F.document & F.caption.lower().regexp(r"^!конкурс(\s|$)"), F.chat.type == "private")
+@router.message(F.document & F.caption & F.caption.lower().regexp(r"^!конкурс(\s|$)"), F.chat.type == "private")
 async def handle_contest_document(message: Message):
     global contest_entries
 
