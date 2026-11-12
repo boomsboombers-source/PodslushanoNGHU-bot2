@@ -20,9 +20,10 @@ user_router = Router()
 def get_main_keyboard():
     return ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(text="📅 Расписание репетиций")],
-            [KeyboardButton(text="📌 Замены")],
-            [KeyboardButton(text="📋 Команды")],
+            # 1-й ряд: События + Команды
+            [KeyboardButton(text="📅 События"), KeyboardButton(text="📋 Команды")],
+            # 2-й ряд: Замены + Репетиции (бывшее Расписание)
+            [KeyboardButton(text="📌 Замены"), KeyboardButton(text="📅 Репетиции")],
         ],
         resize_keyboard=True, is_persistent=True,
         input_field_placeholder="Напиши сообщение для канала..."
@@ -80,7 +81,7 @@ async def cmd_start(message: Message):
         logging.error(f"Ошибка /start: {e}")
         await message.answer("👋 Привет! Бот работает.", reply_markup=get_main_keyboard())
 
-@user_router.message(F.text == "📅 Расписание репетиций")
+@user_router.message(F.text.in_(["📅 Репетиции", "📅 Расписание репетиций"]))
 async def show_schedule(message: Message):
     if not os.path.exists(SCHEDULE_FILE):
         await message.answer("❌ Расписание репетиций не загружено.")
@@ -91,7 +92,12 @@ async def show_schedule(message: Message):
         await message.answer("❌ Расписание репетиций не загружено.")
         return
     try:
-        await message.bot.send_photo(message.from_user.id, photo=photo_id, caption="📅 <b>Расписание репетиций</b>", parse_mode=ParseMode.HTML)
+        await message.bot.send_photo(
+            message.from_user.id, 
+            photo=photo_id, 
+            caption="📅 <b>Расписание репетиций</b>", 
+            parse_mode=ParseMode.HTML
+        )
     except Exception as e:
         logging.error(f"Ошибка расписания: {e}")
         await message.answer("❌ Не удалось загрузить расписание.")
