@@ -58,6 +58,35 @@ async def save_user(user_id: int):
 def get_all_users() -> list[str]:
     return [uid for uid in cached_users.copy() if str(uid).isdigit()]
 
+async def remove_dead_users(dead_ids: list[int]):
+    """Удаляет мертвых юзеров из оперативных списков (users, replies, muted)."""
+    if not dead_ids: return
+    
+    dead_set_str = {str(uid) for uid in dead_ids}
+    global cached_users
+    
+    # 1. users.txt
+    async with user_file_lock:
+        cached_users.difference_update(dead_set_str)
+        try:
+            with open(USERS_FILE, "w", encoding="utf-8") as f:
+                for uid in cached_users:
+                    f.write(uid + "\n")
+        except Exception as e:
+            logging.error(f"Ошибка перезаписи users.txt: {e}")
+            
+    # 2. active_replies
+    async with active_replies_lock:
+        for uid in dead_ids:
+            active_replies.pop(uid, None)
+    mark_replies_dirty()
+    
+    # 3. muted_users
+    async with muted_lock:
+        for uid in dead_ids:
+            muted_users.pop(uid, None)
+    await save_muted()
+
 # ==============================================================================
 # ================= ЮЗЕРНЕЙМЫ ==================================================
 # ==============================================================================
@@ -84,7 +113,6 @@ def load_replies():
             active_replies.clear()
             for k, v in data.items():
                 uid = int(k)
-                # Обратная совместимость: если лежит просто int — конвертируем в словарь
                 if isinstance(v, int):
                     active_replies[uid] = {"msg_id": v, "time": datetime.now().timestamp(), "prompt_id": None}
                 elif isinstance(v, dict):
