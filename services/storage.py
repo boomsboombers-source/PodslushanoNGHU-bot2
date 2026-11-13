@@ -10,7 +10,7 @@ from services.database import (
 )
 
 # --- ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ (ХРАНИЛИЩА) ---
-active_replies = {}
+active_replies = {}       # {user_id: {"msg_id": int, "time": float, "prompt_id": int|None}}
 cached_users = set()
 muted_users = {}
 delayed_posts = []
@@ -82,7 +82,13 @@ def load_replies():
             with open(REPLIES_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
             active_replies.clear()
-            active_replies.update({int(k): v for k, v in data.items()})
+            for k, v in data.items():
+                uid = int(k)
+                # Обратная совместимость: если лежит просто int — конвертируем в словарь
+                if isinstance(v, int):
+                    active_replies[uid] = {"msg_id": v, "time": datetime.now().timestamp(), "prompt_id": None}
+                elif isinstance(v, dict):
+                    active_replies[uid] = v
         except Exception as e:
             logging.error(f"Ошибка загрузки replies.json: {e}")
 
@@ -111,14 +117,11 @@ async def auto_save_replies():
         await asyncio.sleep(5)
 
 # ==============================================================================
-# ================= ЛОГ-СООБЩЕНИЯ (channel_msg_id -> log_msg_id) ===============
+# ================= ЛОГ-СООБЩЕНИЯ ==============================================
 # ==============================================================================
 
-def load_log_ids():
-    pass # Теперь данные в БД
-
-def mark_log_ids_dirty():
-    pass
+def load_log_ids(): pass
+def mark_log_ids_dirty(): pass
 
 async def save_log_msg_id(channel_msg_id: int, log_msg_id: int):
     await save_log_id_db(channel_msg_id, log_msg_id)
@@ -126,8 +129,7 @@ async def save_log_msg_id(channel_msg_id: int, log_msg_id: int):
 async def get_log_msg_id(channel_msg_id: int):
     return await get_log_msg_id_db(channel_msg_id)
 
-async def auto_save_log_ids():
-    pass # Теперь данные в БД
+async def auto_save_log_ids(): pass
 
 # ==============================================================================
 # ================= МУТЫ =======================================================
@@ -189,8 +191,7 @@ def serialize_message(message) -> dict:
 
 def load_delayed():
     global delayed_posts
-    if not os.path.exists(DELAYED_FILE):
-        return
+    if not os.path.exists(DELAYED_FILE): return
     try:
         with open(DELAYED_FILE, "r", encoding="utf-8") as f:
             raw = json.load(f)
