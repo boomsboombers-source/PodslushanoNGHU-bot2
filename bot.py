@@ -13,7 +13,7 @@ from services.storage import (
     load_users_cache, load_replies, load_muted, load_delayed,
     auto_save_replies
 )
-from services.scheduler import delayed_poster, cleanup_muted
+from services.scheduler import delayed_poster, cleanup_muted, cleanup_expired_replies
 from services.database import init_db, close_db
 from services import plugin_registry
 
@@ -116,6 +116,7 @@ async def main():
         asyncio.create_task(cleanup_muted()),
         asyncio.create_task(_birthday_loop()),
         asyncio.create_task(check_events_loop(bot)),
+        asyncio.create_task(cleanup_expired_replies(bot)), # <-- НОВАЯ ЗАДАЧА
     ]
 
     try:
