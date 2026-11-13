@@ -9,7 +9,7 @@ from aiogram import Router, F
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
 from aiogram.filters import Command
 from aiogram.enums import ParseMode
-from aiogram.exceptions import TelegramBadRequest
+from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 
@@ -20,7 +20,7 @@ from config import (
 from services.storage import (
     cached_users, active_replies, mark_replies_dirty, save_user, save_username,
     serialize_message, delayed_posts, delayed_posts_lock, get_all_users, get_id_by_username,
-    get_username_by_id, muted_users, active_replies_lock
+    get_username_by_id, muted_users, active_replies_lock, remove_dead_users
 )
 from services.media import _send_media_with_caption, esc
 from services.text import strip_command_prefix, strip_command_and_target
@@ -29,7 +29,6 @@ from services.database import get_user_info_db, get_top_users_db
 
 admin_router = Router()
 
-# Определяем режим пользователя для возврата клавиатуры (чтобы не было циклического импорта)
 def get_user_mode(user_id: int) -> str:
     if user_id in ADMIN_IDS:
         return "admin"
@@ -48,7 +47,6 @@ def get_main_keyboard(user_id: int, mode: str = "default"):
         rows.insert(0, [KeyboardButton(text="🛡 Модер-панель")])
     return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True, is_persistent=True, input_field_placeholder="Напиши сообщение для канала...")
 
-# --- FSM СОСТОЯНИЯ ДЛЯ ИНСТРУМЕНТОВ ---
 class ToolsStates(StatesGroup):
     waiting_for_schedule = State()
     waiting_for_changes = State()
@@ -58,7 +56,6 @@ class ToolsStates(StatesGroup):
 # ==============================================================================
 
 async def _get_stats_from_db() -> tuple[int, int]:
-    """Возвращает (всего сообщений, сообщений сегодня)."""
     from services.database import db
     today_str = datetime.now(ZoneInfo("Asia/Novosibirsk")).strftime("%d.%m.%Y")
     try:
@@ -72,21 +69,17 @@ async def _get_stats_from_db() -> tuple[int, int]:
         return 0, 0
 
 async def _build_stats_text(is_admin: bool = False) -> str:
-    """Собирает текст статистики. Если is_admin=False, скрывает юзернеймы."""
     total_msgs, today_msgs = await _get_stats_from_db()
-
     muted_list = ""
     if muted_users:
         muted_list = "\n\n🔇 <b>Замученные:</b>\n"
         for uid, until_ts in list(muted_users.items()):
             remaining = int(until_ts - datetime.now().timestamp())
-            
             if is_admin:
                 username = await get_username_by_id(uid)
                 display_name = f"{username} (<code>{uid}</code>)"
             else:
                 display_name = f"<code>{uid}</code>"
-                
             if remaining > 0:
                 minutes = remaining // 60
                 muted_list += f"• {display_name} — {minutes} мин.\n"
@@ -108,18 +101,13 @@ def _plugins_sorted() -> list[dict]:
     return sorted(plugin_registry.get_all(), key=lambda p: p.get("name", ""))
 
 def _render_plugins_menu(for_moder: bool) -> str:
-    """Собирает блоки плагинов для меню команд."""
     lines = []
     for p in _plugins_sorted():
         if for_moder:
-            if "commands_moder" in p:
-                cmds = p["commands_moder"]
-            else:
-                cmds = p.get("commands", [])
+            cmds = p["commands_moder"] if "commands_moder" in p else p.get("commands", [])
         else:
             cmds = p.get("commands", [])
-        if not cmds:
-            continue
+        if not cmds: continue
         icon = p.get("icon", "🔌")
         name = p.get("name", "Без названия")
         lines.append(f"\n{icon} <b>{name}</b>")
@@ -160,27 +148,22 @@ async def admin_menu_handler(callback: CallbackQuery, state: FSMContext):
             [InlineKeyboardButton(text="🧹 Очистить ответы", callback_data="tools_clear_replies")],
             [InlineKeyboardButton(text="📅 Обновить расписание", callback_data="tools_update_schedule")],
             [InlineKeyboardButton(text="📌 Обновить замены", callback_data="tools_update_changes")],
+            [InlineKeyboardButton(text="🔄 Синхронизация базы", callback_data="tools_sync")],
             [InlineKeyboardButton(text="⬅️ Назад", callback_data="admin_back")],
         ])
         await callback.message.answer("🛠 <b>Инструменты</b>\nВыбери действие:", reply_markup=kb, parse_mode=ParseMode.HTML)
 
     elif action == "plugins":
         plugins = plugin_registry.get_all()
-        back_kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="⬅️ Назад", callback_data="admin_back")]
-        ])
+        back_kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="admin_back")]])
         if not plugins:
-            await callback.message.answer(
-                "🔌 <b>Плагины</b>\n\nПока не подключено ни одного плагина.",
-                parse_mode=ParseMode.HTML, reply_markup=back_kb
-            )
+            await callback.message.answer("🔌 <b>Плагины</b>\n\nПока не подключено ни одного плагина.", parse_mode=ParseMode.HTML, reply_markup=back_kb)
         else:
             text = "🔌 <b>Подключённые плагины:</b>\n\n"
             for i, p in enumerate(plugins, 1):
                 text += f"<b>{i}. {esc(p.get('name', 'Без названия'))}</b>\n"
                 desc = p.get("description", "")
-                if desc:
-                    text += f"<i>{esc(desc)}</i>\n"
+                if desc: text += f"<i>{esc(desc)}</i>\n"
                 cmds = p.get("commands", [])
                 if cmds:
                     for cmd, cmd_desc in cmds:
@@ -207,7 +190,7 @@ async def admin_menu_handler(callback: CallbackQuery, state: FSMContext):
             "📚 <b>Полная шпаргалка по командам</b>\n\n"
             "⚙️ <b>Основное (панели)</b>\n"
             "• <code>/start admin</code> — меню с панелями.\n"
-            "• Кнопка <b>«🛠 Инструменты»</b> — обновление расписания, замен и очистка ответов (без ввода команд!).\n\n"
+            "• Кнопка <b>«🛠 Инструменты»</b> — обновление расписания, замен, очистка ответов и синхронизация базы.\n\n"
             "📅 <b>Расписание и Замены</b>\n"
             "• Используйте кнопки в <b>«🛠 Инструменты»</b>.\n"
             "• Или по-старому: <code>!расписание</code> / <code>!замены</code> (в подписи к фото).\n\n"
@@ -224,13 +207,69 @@ async def admin_menu_handler(callback: CallbackQuery, state: FSMContext):
             "• <code>!кнопка [ID]</code> — добавит кнопки к старому посту.\n\n"
             "📊 <b>Статистика и очистка</b>\n"
             "• <code>!статистика</code> — общая статистика.\n"
-            "• <code>!очистить_ответы</code> — сброс ожиданий.\n\n"
+            "• <code>!очистить_ответы</code> — сброс ожиданий.\n"
+            "• <code>!синхрон</code> — удалить мертвых и обновить юзернеймы.\n\n"
             "🕵️ <b>Аналитика (по базе данных)</b>\n"
             "• <code>!кто [ID|@username]</code> — узнать инфу о пользователе.\n"
             "• <code>!топ</code> — топ-10 самых активных.\n"
         )
         await callback.message.answer(core, parse_mode=ParseMode.HTML)
     await callback.answer()
+
+# ==============================================================================
+# ================= СИНХРОНИЗАЦИЯ (МЕРТВЫЕ И ЮЗЕРНЕЙМЫ) =======================
+# ==============================================================================
+
+async def _perform_sync(message: Message):
+    status_msg = await message.answer("⏳ <b>Начинаю синхронизацию...</b> Это может занять время.", parse_mode=ParseMode.HTML)
+    
+    users = get_all_users()
+    dead_ids = []
+    dead_info = []
+    updated_usernames = 0
+    
+    for uid_str in users:
+        uid = int(uid_str)
+        try:
+            chat = await message.bot.get_chat(uid) 
+            if chat.username:
+                await save_username(chat.username, uid)
+                updated_usernames += 1
+        except (TelegramForbiddenError, TelegramBadRequest) as e:
+            err_text = str(e).lower()
+            if "blocked" in err_text or "deactivated" in err_text or "chat not found" in err_text:
+                dead_ids.append(uid)
+                uname = await get_username_by_id(uid)
+                dead_info.append(f"<code>{uid}</code> ({uname})")
+        except Exception:
+            pass
+        await asyncio.sleep(0.05)
+        
+    if dead_ids:
+        await remove_dead_users(dead_ids)
+        
+    report_lines = ["✅ <b>Синхронизация завершена!</b>\n", f"🔄 Обновлено юзернеймов: <b>{updated_usernames}</b>"]
+    
+    if dead_ids:
+        report_lines.append(f"🗑 Удалено мертвых: <b>{len(dead_ids)}</b>\n")
+        report_str = "\n".join(dead_info[:30])
+        if len(dead_info) > 30:
+            report_str += f"\n... и еще {len(dead_info) - 30}."
+        report_lines.append(f"<b>Список удаленных:</b>\n{report_str}")
+    else:
+        report_lines.append("🗑 Мертвых не найдено.")
+        
+    await status_msg.edit_text("\n".join(report_lines), parse_mode=ParseMode.HTML)
+
+@admin_router.callback_query(F.data == "tools_sync")
+async def tools_sync(callback: CallbackQuery):
+    if callback.from_user.id not in ADMIN_IDS: return
+    await callback.answer()
+    await _perform_sync(callback.message)
+
+@admin_router.message(F.text.lower() == "!синхрон", F.from_user.id.in_(ADMIN_IDS))
+async def cmd_sync(message: Message):
+    await _perform_sync(message)
 
 # ==============================================================================
 # ================= ИНСТРУМЕНТЫ (FSM) ==========================================
@@ -247,7 +286,6 @@ async def tools_clear_replies(callback: CallbackQuery):
 @admin_router.callback_query(F.data == "tools_update_schedule")
 async def tools_update_schedule(callback: CallbackQuery, state: FSMContext):
     if callback.from_user.id not in ADMIN_IDS and callback.from_user.id not in MODERATOR_IDS: return
-    
     cancel_kb = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="❌ Отмена")]], resize_keyboard=True)
     await callback.message.answer("📸 Пришлите фотографию <b>расписания репетиций</b> (без подписи):", parse_mode=ParseMode.HTML, reply_markup=cancel_kb)
     await state.set_state(ToolsStates.waiting_for_schedule)
@@ -256,7 +294,6 @@ async def tools_update_schedule(callback: CallbackQuery, state: FSMContext):
 @admin_router.callback_query(F.data == "tools_update_changes")
 async def tools_update_changes(callback: CallbackQuery, state: FSMContext):
     if callback.from_user.id not in ADMIN_IDS and callback.from_user.id not in MODERATOR_IDS: return
-    
     cancel_kb = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="❌ Отмена")]], resize_keyboard=True)
     await callback.message.answer("📸 Пришлите фотографию <b>замен</b> (без подписи):", parse_mode=ParseMode.HTML, reply_markup=cancel_kb)
     await state.set_state(ToolsStates.waiting_for_changes)
@@ -291,7 +328,6 @@ async def catch_wrong_input(message: Message, state: FSMContext):
         await state.clear()
         await message.answer("❌ Действие отменено.", reply_markup=get_main_keyboard(message.from_user.id, mode=get_user_mode(message.from_user.id)))
         return
-    
     await message.answer("⚠️ Ожидается фотография (или нажмите «❌ Отмена»).", reply_markup=ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="❌ Отмена")]], resize_keyboard=True))
 
 # ==============================================================================
@@ -425,26 +461,6 @@ async def add_button(message: Message):
         else:
             await message.answer(f"❌ Ошибка: {e}")
 
-@admin_router.message((F.text | F.caption).startswith("!рассылка"), F.from_user.id.in_(ADMIN_IDS))
-async def broadcast(message: Message):
-    source = message.text or message.caption or ""
-    clean_text = strip_command_prefix(source, "!рассылка")
-    has_media = bool(message.photo or message.video or message.document or message.audio or message.voice or message.video_note or message.sticker or message.contact or message.location)
-    if not clean_text and not has_media:
-        await message.answer("❌ Текст пуст.")
-        return
-    users = [uid for uid in get_all_users() if str(uid).isdigit()]
-    await message.answer(f"🚀 Рассылка для {len(users)}...")
-    success = 0
-    for uid_str in users:
-        try:
-            await _send_media_with_caption(message.bot, int(uid_str), message, caption=clean_text, parse_mode=ParseMode.HTML)
-            success += 1
-            await asyncio.sleep(0.1)
-        except Exception as e:
-            logging.warning(f"Не отправлено {uid_str}: {e}")
-    await message.answer(f"✅ Отправлено: {success} из {len(users)}.")
-
 @admin_router.message((F.text | F.caption).startswith("!лс"), F.from_user.id.in_(ADMIN_IDS))
 async def private_message(message: Message):
     source = message.text or message.caption or ""
@@ -526,6 +542,43 @@ async def admin_top_users(message: Message):
             name = "Скрытый профиль"
         lines.append(f"{i}. {esc(name)} (<code>{uid}</code>) — <b>{count}</b> сообщений")
     await message.answer("\n".join(lines), parse_mode=ParseMode.HTML)
+
+# ==============================================================================
+# ================= РАССЫЛКА С ОЧИСТКОЙ ========================================
+# ==============================================================================
+
+@admin_router.message((F.text | F.caption).startswith("!рассылка"), F.from_user.id.in_(ADMIN_IDS))
+async def broadcast(message: Message):
+    source = message.text or message.caption or ""
+    clean_text = strip_command_prefix(source, "!рассылка")
+    has_media = bool(message.photo or message.video or message.document or message.audio or message.voice or message.video_note or message.sticker or message.contact or message.location)
+    if not clean_text and not has_media:
+        await message.answer("❌ Текст пуст.")
+        return
+    users = [uid for uid in get_all_users() if str(uid).isdigit()]
+    await message.answer(f"🚀 Рассылка для {len(users)}...")
+    
+    success = 0
+    dead_ids = []
+    
+    for uid_str in users:
+        try:
+            await _send_media_with_caption(message.bot, int(uid_str), message, caption=clean_text, parse_mode=ParseMode.HTML)
+            success += 1
+            await asyncio.sleep(0.1)
+        except (TelegramForbiddenError, TelegramBadRequest) as e:
+            err_text = str(e).lower()
+            if "blocked" in err_text or "deactivated" in err_text or "chat not found" in err_text:
+                dead_ids.append(int(uid_str))
+        except Exception as e:
+            logging.warning(f"Не отправлено {uid_str}: {e}")
+            
+    if dead_ids:
+        await remove_dead_users(dead_ids)
+        await message.answer(f"ℹ️ Удалено мертвых из базы: {len(dead_ids)}")
+        
+    await message.answer(f"✅ Отправлено: {success} из {len(users)}.")
+
 
 # ==============================================================================
 # ================= МОДЕРАТОРСКИЕ КОМАНДЫ ======================================
