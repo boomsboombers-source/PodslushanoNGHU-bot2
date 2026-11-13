@@ -6,10 +6,12 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from aiogram import Router, F
-from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
 from aiogram.filters import Command
 from aiogram.enums import ParseMode
 from aiogram.exceptions import TelegramBadRequest
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
 
 from config import (
     CHANNEL_ID, LOG_CHAT_ID, ADMIN_IDS, MODERATOR_IDS,
@@ -26,6 +28,30 @@ from services import plugin_registry
 from services.database import get_user_info_db, get_top_users_db
 
 admin_router = Router()
+
+# Определяем режим пользователя для возврата клавиатуры (чтобы не было циклического импорта)
+def get_user_mode(user_id: int) -> str:
+    if user_id in ADMIN_IDS:
+        return "admin"
+    if user_id in MODERATOR_IDS:
+        return "moder"
+    return "default"
+
+def get_main_keyboard(user_id: int, mode: str = "default"):
+    rows = [
+        [KeyboardButton(text="📅 События"), KeyboardButton(text="📋 Команды")],
+        [KeyboardButton(text="📌 Замены"), KeyboardButton(text="📅 Репетиции")],
+    ]
+    if mode == "admin" and user_id in ADMIN_IDS:
+        rows.insert(0, [KeyboardButton(text="🛡 Модер-панель"), KeyboardButton(text="🛠 Админ-панель")])
+    elif mode == "moder" and user_id in MODERATOR_IDS:
+        rows.insert(0, [KeyboardButton(text="🛡 Модер-панель")])
+    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True, is_persistent=True, input_field_placeholder="Напиши сообщение для канала...")
+
+# --- FSM СОСТОЯНИЯ ДЛЯ ИНСТРУМЕНТОВ ---
+class ToolsStates(StatesGroup):
+    waiting_for_schedule = State()
+    waiting_for_changes = State()
 
 # ==============================================================================
 # ================= ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ====================================
@@ -81,7 +107,6 @@ async def _build_stats_text(is_admin: bool = False) -> str:
 def _plugins_sorted() -> list[dict]:
     return sorted(plugin_registry.get_all(), key=lambda p: p.get("name", ""))
 
-
 def _render_plugins_menu(for_moder: bool) -> str:
     """Собирает блоки плагинов для меню команд."""
     lines = []
@@ -112,15 +137,14 @@ async def admin_panel(message: Message):
     if message.from_user.id not in ADMIN_IDS: return
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📊 Статистика", callback_data="admin_stats")],
-        [InlineKeyboardButton(text="🧹 Очистить ответы", callback_data="admin_clear_replies")],
+        [InlineKeyboardButton(text="🛠 Инструменты", callback_data="admin_tools")],
         [InlineKeyboardButton(text="🔌 Плагины", callback_data="admin_plugins")],
         [InlineKeyboardButton(text="📚 Команды", callback_data="admin_settings")],
     ])
     await message.answer("🛠 <b>Админ-панель</b>\nВыбери действие:", reply_markup=kb, parse_mode=ParseMode.HTML)
 
-
 @admin_router.callback_query(F.data.startswith("admin_"))
-async def admin_menu_handler(callback: CallbackQuery):
+async def admin_menu_handler(callback: CallbackQuery, state: FSMContext):
     if callback.from_user.id not in ADMIN_IDS: return
     if callback.message is None:
         return await callback.answer("Сообщение недоступно", show_alert=True)
@@ -131,11 +155,14 @@ async def admin_menu_handler(callback: CallbackQuery):
         text = await _build_stats_text(is_admin=True)
         await callback.message.answer(text, parse_mode=ParseMode.HTML)
 
-    elif action == "clear_replies":
-        async with active_replies_lock:
-            active_replies.clear()
-        mark_replies_dirty()
-        await callback.message.answer("✅ Все ожидания ответов очищены.")
+    elif action == "tools":
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🧹 Очистить ответы", callback_data="tools_clear_replies")],
+            [InlineKeyboardButton(text="📅 Обновить расписание", callback_data="tools_update_schedule")],
+            [InlineKeyboardButton(text="📌 Обновить замены", callback_data="tools_update_changes")],
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="admin_back")],
+        ])
+        await callback.message.answer("🛠 <b>Инструменты</b>\nВыбери действие:", reply_markup=kb, parse_mode=ParseMode.HTML)
 
     elif action == "plugins":
         plugins = plugin_registry.get_all()
@@ -144,8 +171,7 @@ async def admin_menu_handler(callback: CallbackQuery):
         ])
         if not plugins:
             await callback.message.answer(
-                "🔌 <b>Плагины</b>\n\nПока не подключено ни одного плагина.\n"
-                "Положите файл в папку <code>plugins/</code> и перезапустите бота.",
+                "🔌 <b>Плагины</b>\n\nПока не подключено ни одного плагина.",
                 parse_mode=ParseMode.HTML, reply_markup=back_kb
             )
         else:
@@ -167,40 +193,31 @@ async def admin_menu_handler(callback: CallbackQuery):
     elif action == "back":
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="📊 Статистика", callback_data="admin_stats")],
-            [InlineKeyboardButton(text="🧹 Очистить ответы", callback_data="admin_clear_replies")],
+            [InlineKeyboardButton(text="🛠 Инструменты", callback_data="admin_tools")],
             [InlineKeyboardButton(text="🔌 Плагины", callback_data="admin_plugins")],
             [InlineKeyboardButton(text="📚 Команды", callback_data="admin_settings")],
         ])
         try:
-            await callback.message.edit_text(
-                "🛠 <b>Админ-панель</b>\nВыбери действие:",
-                reply_markup=kb, parse_mode=ParseMode.HTML
-            )
+            await callback.message.edit_text("🛠 <b>Админ-панель</b>\nВыбери действие:", reply_markup=kb, parse_mode=ParseMode.HTML)
         except TelegramBadRequest:
-            await callback.message.answer(
-                "🛠 <b>Админ-панель</b>\nВыбери действие:",
-                reply_markup=kb, parse_mode=ParseMode.HTML
-            )
+            await callback.message.answer("🛠 <b>Админ-панель</b>\nВыбери действие:", reply_markup=kb, parse_mode=ParseMode.HTML)
 
     elif action == "settings":
         core = (
             "📚 <b>Полная шпаргалка по командам</b>\n\n"
             "⚙️ <b>Основное (панели)</b>\n"
-            "• <code>/start admin</code> — вызвать меню с кнопками <b>«🛡 Модер-панель»</b> и <b>«🛠 Админ-панель»</b>.\n"
-            "• <code>/start moder</code> — вызвать меню с кнопкой <b>«🛡 Модер-панель»</b>.\n"
-            "• Кнопки <b>«🛡 Модер-панель»</b> и <b>«🛠 Админ-панель»</b> внизу экрана — быстрый вызов панелей.\n\n"
-            "📅 <b>Расписание</b>\n"
-            "• <code>!расписание</code> — <i>прикрепи фото расписания репетиций, в подписи напиши эту команду.</i>\n"
-            "• <code>!замены</code> — <i>прикрепи фото замен, в подписи напиши эту команду.</i>\n\n"
+            "• <code>/start admin</code> — меню с панелями.\n"
+            "• Кнопка <b>«🛠 Инструменты»</b> — обновление расписания, замен и очистка ответов (без ввода команд!).\n\n"
+            "📅 <b>Расписание и Замены</b>\n"
+            "• Используйте кнопки в <b>«🛠 Инструменты»</b>.\n"
+            "• Или по-старому: <code>!расписание</code> / <code>!замены</code> (в подписи к фото).\n\n"
             "📢 <b>Рассылка</b>\n"
             "• <code>!рассылка [текст]</code> — разошлет текст всем.\n"
             "• <code>!рассылка</code> + фото/видео — разошлет медиа.\n\n"
             "✉️ <b>Личное сообщение</b>\n"
             "• <code>!лс [ID|@username] [текст]</code> — отправит сообщение конкретному человеку.\n\n"
             "🤖 <b>Сообщение от админа</b>\n"
-            "• <code>!адс [текст]</code> — опубликует сообщение с пометкой «Сообщение от админа».\n"
-            "• Можно прикрепить фото/видео.\n"
-            "• Работает как ответ на пост.\n\n"
+            "• <code>!адс [текст]</code> — опубликует сообщение с пометкой «Сообщение от админа».\n\n"
             "⏰ <b>Отложенный пост</b>\n"
             "• <code>!отложка [ЧЧ:ММ] [текст]</code> — отложенная публикация.\n\n"
             "🔘 <b>Кнопка к старому посту</b>\n"
@@ -212,10 +229,70 @@ async def admin_menu_handler(callback: CallbackQuery):
             "• <code>!кто [ID|@username]</code> — узнать инфу о пользователе.\n"
             "• <code>!топ</code> — топ-10 самых активных.\n"
         )
-        plugins_block = _render_plugins_menu(for_moder=False)
-        text = core + (plugins_block if plugins_block else "")
-        await callback.message.answer(text, parse_mode=ParseMode.HTML)
+        await callback.message.answer(core, parse_mode=ParseMode.HTML)
     await callback.answer()
+
+# ==============================================================================
+# ================= ИНСТРУМЕНТЫ (FSM) ==========================================
+# ==============================================================================
+
+@admin_router.callback_query(F.data == "tools_clear_replies")
+async def tools_clear_replies(callback: CallbackQuery):
+    if callback.from_user.id not in ADMIN_IDS and callback.from_user.id not in MODERATOR_IDS: return
+    async with active_replies_lock:
+        active_replies.clear()
+    mark_replies_dirty()
+    await callback.answer("✅ Все ожидания ответов очищены!", show_alert=True)
+
+@admin_router.callback_query(F.data == "tools_update_schedule")
+async def tools_update_schedule(callback: CallbackQuery, state: FSMContext):
+    if callback.from_user.id not in ADMIN_IDS and callback.from_user.id not in MODERATOR_IDS: return
+    
+    cancel_kb = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="❌ Отмена")]], resize_keyboard=True)
+    await callback.message.answer("📸 Пришлите фотографию <b>расписания репетиций</b> (без подписи):", parse_mode=ParseMode.HTML, reply_markup=cancel_kb)
+    await state.set_state(ToolsStates.waiting_for_schedule)
+    await callback.answer()
+
+@admin_router.callback_query(F.data == "tools_update_changes")
+async def tools_update_changes(callback: CallbackQuery, state: FSMContext):
+    if callback.from_user.id not in ADMIN_IDS and callback.from_user.id not in MODERATOR_IDS: return
+    
+    cancel_kb = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="❌ Отмена")]], resize_keyboard=True)
+    await callback.message.answer("📸 Пришлите фотографию <b>замен</b> (без подписи):", parse_mode=ParseMode.HTML, reply_markup=cancel_kb)
+    await state.set_state(ToolsStates.waiting_for_changes)
+    await callback.answer()
+
+@admin_router.message(ToolsStates.waiting_for_schedule, F.photo)
+async def save_schedule_photo(message: Message, state: FSMContext):
+    try:
+        with open(SCHEDULE_FILE, "w", encoding="utf-8") as f:
+            f.write(message.photo[-1].file_id)
+        await message.answer("✅ Расписание успешно обновлено!", reply_markup=get_main_keyboard(message.from_user.id, mode=get_user_mode(message.from_user.id)))
+    except Exception as e:
+        await message.answer(f"❌ Ошибка сохранения: {e}", reply_markup=get_main_keyboard(message.from_user.id, mode=get_user_mode(message.from_user.id)))
+    finally:
+        await state.clear()
+
+@admin_router.message(ToolsStates.waiting_for_changes, F.photo)
+async def save_changes_photo(message: Message, state: FSMContext):
+    try:
+        with open(SCHEDULE2_FILE, "w", encoding="utf-8") as f:
+            f.write(message.photo[-1].file_id)
+        await message.answer("✅ Замены успешно обновлены!", reply_markup=get_main_keyboard(message.from_user.id, mode=get_user_mode(message.from_user.id)))
+    except Exception as e:
+        await message.answer(f"❌ Ошибка сохранения: {e}", reply_markup=get_main_keyboard(message.from_user.id, mode=get_user_mode(message.from_user.id)))
+    finally:
+        await state.clear()
+
+@admin_router.message(ToolsStates.waiting_for_schedule)
+@admin_router.message(ToolsStates.waiting_for_changes)
+async def catch_wrong_input(message: Message, state: FSMContext):
+    if message.text and message.text.strip() == "❌ Отмена":
+        await state.clear()
+        await message.answer("❌ Действие отменено.", reply_markup=get_main_keyboard(message.from_user.id, mode=get_user_mode(message.from_user.id)))
+        return
+    
+    await message.answer("⚠️ Ожидается фотография (или нажмите «❌ Отмена»).", reply_markup=ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="❌ Отмена")]], resize_keyboard=True))
 
 # ==============================================================================
 # ================= АДМИНСКИЕ КОМАНДЫ (ТЕКСТОВЫЕ) ==============================
@@ -247,7 +324,6 @@ async def set_schedule2(message: Message):
 
 @admin_router.message(F.text.startswith("!статистика"), F.from_user.id.in_(ADMIN_IDS + MODERATOR_IDS))
 async def admin_stats_text(message: Message):
-    # Проверяем, админ это или модератор
     is_admin = message.from_user.id in ADMIN_IDS
     text = await _build_stats_text(is_admin=is_admin)
     await message.answer(text, parse_mode=ParseMode.HTML)
@@ -462,6 +538,7 @@ async def moderator_panel(message: Message):
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📖 Инструкция", callback_data="moder_guide")],
         [InlineKeyboardButton(text="📊 Статистика", callback_data="moder_stats")],
+        [InlineKeyboardButton(text="🛠 Инструменты", callback_data="moder_tools")],
         [InlineKeyboardButton(text="📚 Команды модератора", callback_data="moder_settings")],
     ])
     await message.answer("🛠 <b>Панель модератора</b>\nВыбери действие:", reply_markup=kb, parse_mode=ParseMode.HTML)
@@ -469,11 +546,36 @@ async def moderator_panel(message: Message):
 @admin_router.callback_query(F.data == "moder_stats")
 async def moderator_stats(callback: CallbackQuery):
     if callback.from_user.id not in MODERATOR_IDS and callback.from_user.id not in ADMIN_IDS: return
-    
-    # is_admin=False скроет юзернеймы в списке мутов
     text = await _build_stats_text(is_admin=False)
-    
     await callback.message.answer(text, parse_mode=ParseMode.HTML)
+    await callback.answer()
+
+@admin_router.callback_query(F.data == "moder_tools")
+async def moderator_tools(callback: CallbackQuery):
+    if callback.from_user.id not in MODERATOR_IDS and callback.from_user.id not in ADMIN_IDS: return
+    
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🧹 Очистить ответы", callback_data="tools_clear_replies")],
+        [InlineKeyboardButton(text="📅 Обновить расписание", callback_data="tools_update_schedule")],
+        [InlineKeyboardButton(text="📌 Обновить замены", callback_data="tools_update_changes")],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="moder_back")],
+    ])
+    await callback.message.answer("🛠 <b>Инструменты</b>\nВыбери действие:", reply_markup=kb, parse_mode=ParseMode.HTML)
+    await callback.answer()
+
+@admin_router.callback_query(F.data == "moder_back")
+async def moderator_back(callback: CallbackQuery):
+    if callback.from_user.id not in MODERATOR_IDS and callback.from_user.id not in ADMIN_IDS: return
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📖 Инструкция", callback_data="moder_guide")],
+        [InlineKeyboardButton(text="📊 Статистика", callback_data="moder_stats")],
+        [InlineKeyboardButton(text="🛠 Инструменты", callback_data="moder_tools")],
+        [InlineKeyboardButton(text="📚 Команды модератора", callback_data="moder_settings")],
+    ])
+    try:
+        await callback.message.edit_text("🛠 <b>Панель модератора</b>\nВыбери действие:", reply_markup=kb, parse_mode=ParseMode.HTML)
+    except TelegramBadRequest:
+        await callback.message.answer("🛠 <b>Панель модератора</b>\nВыбери действие:", reply_markup=kb, parse_mode=ParseMode.HTML)
     await callback.answer()
 
 @admin_router.callback_query(F.data == "moder_settings")
@@ -483,11 +585,11 @@ async def moderator_settings(callback: CallbackQuery):
     core = (
         "📚 <b>Команды модератора</b>\n\n"
         "⚙️ <b>Основное</b>\n"
-        "• <code>/start moder</code> — вызвать меню с кнопкой <b>«🛡 Модер-панель»</b> внизу экрана.\n"
-        "• Кнопка <b>«🛡 Модер-панель»</b> — быстрый вызов этой панели.\n\n"
-        "📅 <b>Расписание</b>\n"
-        "• <code>!расписание</code> — обновить фото расписания.\n"
-        "• <code>!замены</code> — обновить фото замен.\n\n"
+        "• <code>/start moder</code> — меню с кнопкой «🛡 Модер-панель».\n"
+        "• Кнопка <b>«🛠 Инструменты»</b> — быстрый способ обновить расписание, замены или очистить ответы.\n\n"
+        "📅 <b>Расписание и Замены</b>\n"
+        "• Просто нажмите кнопку в <b>«🛠 Инструменты»</b> и отправьте фото.\n"
+        "• Или используйте команды: <code>!расписание</code> / <code>!замены</code> (в подписи к фото).\n\n"
         "🛡 <b>Сообщение от модератора</b>\n"
         "• <code>!мдс [текст]</code> — опубликовать сообщение с пометкой «Сообщение от модератора».\n\n"
         "📊 <b>Статистика</b>\n"
@@ -509,13 +611,12 @@ async def moderator_guide(callback: CallbackQuery):
         "🔹 <b>Быстрый доступ к панели</b>\n"
         "Чтобы открыть панель модератора, ты можешь:\n"
         "1. Написать боту <code>/start moder</code> (внизу появится кнопка <b>«🛡 Модер-панель»</b>).\n"
-        "2. Или просто нажать на эту кнопку, если она уже есть на клавиатуре.\n"
+        "2. Или просто нажать на эту кнопку.\n"
         "3. Или написать команду <code>/moder</code> (или <code>!moder</code>).\n\n"
         
-        "🔹 <b>Обновление расписания</b>\n"
-        "Чтобы обновить расписание или замены, отправь боту <b>фотографию</b> (расписание или замены) и в поле <b>подписи к фото</b> напиши нужную команду:\n"
-        "• <code>!расписание</code> — для расписания репетиций.\n"
-        "• <code>!замены</code> — для изменений в обычном расписании.\n\n"
+        "🔹 <b>Обновление расписания и замен (через Инструменты)</b>\n"
+        "Теперь <b>не обязательно вводить команды</b>! В панели модератора нажми кнопку <b>«🛠 Инструменты»</b>, выбери нужный пункт (Расписание или Замены) и просто отправь фотографию. Бот сам всё сохранит.\n"
+        "(Если хочешь по-старому — можно прикрепить фото и написать <code>!расписание</code> или <code>!замены</code> в подписи).\n\n"
         
         "🔹 <b>Как отвечать на посты</b>\n"
         "Ты можешь публиковать сообщения от лица модерации. Для этого нажми кнопку <b>«📩 Новое сообщение»</b> или <b>«💬 Ответить»</b> под нужным постом в канале, а затем в ЛС бота напиши:\n"
@@ -537,7 +638,7 @@ async def moderator_guide(callback: CallbackQuery):
         "🔹 <b>Дни рождения</b>\n"
         "Ты можешь добавлять и искать ДР пользователей. Список команд — в меню «📚 Команды модератора».\n\n"
         
-        "⚠️ <i>Помни: от тебя много зависит, не заывай обновлять расписание. Будь вежлив и объективен.</i>",
+        "⚠️ <i>Помни: от тебя много зависит, не забывай обновлять расписание. Будь вежлив и объективен.</i>",
         parse_mode=ParseMode.HTML
     )
     await callback.answer()
@@ -573,7 +674,7 @@ async def moderator_message(message: Message):
         
         await message.answer("✅ Сообщение от модератора опубликовано в канале.")
 
-        # --- НОВОЕ: Логирование в лог-группу ---
+        # Логирование в лог-группу
         try:
             chat_id_str = str(CHANNEL_ID).replace("-100", "")
             msg_link = f"https://t.me/c/{chat_id_str}/{sent_msg.message_id}"
@@ -598,7 +699,6 @@ async def moderator_message(message: Message):
             await message.bot.send_message(LOG_CHAT_ID, log_text, parse_mode=ParseMode.HTML, reply_markup=log_kb)
         except Exception as e:
             logging.error(f"Ошибка лога модератора: {e}")
-        # -------------------------------------
 
     except Exception as e:
         await message.answer(f"❌ Ошибка публикации: {e}")
