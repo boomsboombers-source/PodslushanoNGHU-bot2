@@ -18,39 +18,22 @@ from services.database import log_message_db, get_username_by_id_db
 user_router = Router()
 
 def get_user_mode(user_id: int) -> str:
-    """Определяет режим пользователя для клавиатуры."""
-    if user_id in ADMIN_IDS:
-        return "admin"
-    if user_id in MODERATOR_IDS:
-        return "moder"
+    if user_id in ADMIN_IDS: return "admin"
+    if user_id in MODERATOR_IDS: return "moder"
     return "default"
 
 def get_main_keyboard(user_id: int = None, mode: str = "default"):
-    # Базовые ряды (всегда на месте)
     rows = [
         [KeyboardButton(text="📅 События"), KeyboardButton(text="📋 Команды")],
         [KeyboardButton(text="📌 Замены"), KeyboardButton(text="📅 Репетиции")],
     ]
-    
-    # Добавляем новый ряд СВЕРХУ в зависимости от режима
     if mode == "admin" and user_id in ADMIN_IDS:
-        rows.insert(0, [
-            KeyboardButton(text="🛡 Модер-панель"), 
-            KeyboardButton(text="🛠 Админ-панель")
-        ])
+        rows.insert(0, [KeyboardButton(text="🛡 Модер-панель"), KeyboardButton(text="🛠 Админ-панель")])
     elif mode == "moder" and user_id in STAFF_IDS:
-        rows.insert(0, [
-            KeyboardButton(text="🛡 Модер-панель")
-        ])
-        
-    return ReplyKeyboardMarkup(
-        keyboard=rows,
-        resize_keyboard=True, is_persistent=True,
-        input_field_placeholder="Напиши сообщение для канала..."
-    )
+        rows.insert(0, [KeyboardButton(text="🛡 Модер-панель")])
+    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True, is_persistent=True, input_field_placeholder="Напиши сообщение для канала...")
 
 async def get_signed_signature(user) -> str:
-    """Формирует подпись автора для неанонимных сообщений."""
     username = await get_username_by_id_db(user.id)
     signature = f"\n\n👤 <b>Автор:</b> {esc(user.full_name)}"
     if username and username != "нет username":
@@ -62,15 +45,12 @@ async def cmd_start(message: Message):
     await save_user(message.from_user.id)
     await save_username(message.from_user.username, message.from_user.id)
 
-    # 1. Определяем режим клавиатуры на основе /start xxx
     text_lower = (message.text or "").lower()
     args = text_lower.split(maxsplit=1)
     start_arg = args[1] if len(args) > 1 else ""
     
-    # По умолчанию берем режим пользователя (чтобы стафф всегда видел свои кнопки)
     mode = get_user_mode(message.from_user.id)
 
-    # Переопределяем режим, если введен специальный аргумент
     if start_arg == "admin":
         if message.from_user.id not in ADMIN_IDS:
             await message.answer("⛔ У вас нет доступа к админ-панели.")
@@ -82,23 +62,22 @@ async def cmd_start(message: Message):
             return
         mode = "moder"
 
-    # 2. Обработка reply и new
     if start_arg == "reply":
-        cancel_kb = ReplyKeyboardMarkup(
-            keyboard=[[KeyboardButton(text="❌ Отменить ответ")]],
-            resize_keyboard=True
-        )
-        await message.answer("✍️ <b>Отлично!</b> Напиши или прикрепи то, что хочешь отправить в ответ на пост:", parse_mode=ParseMode.HTML, reply_markup=cancel_kb)
+        cancel_kb = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="❌ Отменить ответ")]], resize_keyboard=True)
+        prompt_msg = await message.answer("✍️ <b>Отлично!</b> Напиши или прикрепи то, что хочешь отправить в ответ на пост:", parse_mode=ParseMode.HTML, reply_markup=cancel_kb)
+        
+        # Сохраняем ID сообщения, чтобы потом его редактировать по таймеру
+        async with active_replies_lock:
+            if message.from_user.id in active_replies:
+                active_replies[message.from_user.id]["prompt_id"] = prompt_msg.message_id
+        mark_replies_dirty()
         return
+        
     if start_arg == "new":
-        cancel_kb = ReplyKeyboardMarkup(
-            keyboard=[[KeyboardButton(text="❌ Отменить отправку")]],
-            resize_keyboard=True
-        )
+        cancel_kb = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="❌ Отменить отправку")]], resize_keyboard=True)
         await message.answer("📩 <b>Напиши или прикрепи сообщение, которое хочешь отправить в канал анонимно:</b>", parse_mode=ParseMode.HTML, reply_markup=cancel_kb)
         return
 
-    # 3. Отправка приветствия
     if not os.path.exists(WELCOME_IMAGE):
         await message.answer("👋 Привет! Бот работает.", reply_markup=get_main_keyboard(message.from_user.id, mode=mode))
     else:
@@ -130,7 +109,6 @@ async def cmd_start(message: Message):
             logging.error(f"Ошибка /start: {e}")
             await message.answer("👋 Привет! Бот работает.", reply_markup=get_main_keyboard(message.from_user.id, mode=mode))
 
-    # 4. Показываем панели, если это /start admin или /start moder
     if mode == "admin" and start_arg == "admin":
         from handlers.admin import admin_panel
         await admin_panel(message)
@@ -150,12 +128,7 @@ async def show_schedule(message: Message):
         await message.answer("❌ Расписание репетиций не загружено.")
         return
     try:
-        await message.bot.send_photo(
-            message.from_user.id, 
-            photo=photo_id, 
-            caption="📅 <b>Расписание репетиций</b>", 
-            parse_mode=ParseMode.HTML
-        )
+        await message.bot.send_photo(message.from_user.id, photo=photo_id, caption="📅 <b>Расписание репетиций</b>", parse_mode=ParseMode.HTML)
     except Exception as e:
         logging.error(f"Ошибка расписания: {e}")
         await message.answer("❌ Не удалось загрузить расписание.")
@@ -208,16 +181,14 @@ async def show_commands(message: Message):
 
 @user_router.message(F.text == "🛠 Админ-панель")
 async def open_admin_panel_kb(message: Message):
-    if message.from_user.id not in ADMIN_IDS:
-        return
+    if message.from_user.id not in ADMIN_IDS: return
     from handlers.admin import admin_panel
     await admin_panel(message)
 
 
 @user_router.message(F.text == "🛡 Модер-панель")
 async def open_moder_panel_kb(message: Message):
-    if message.from_user.id not in STAFF_IDS:
-        return
+    if message.from_user.id not in STAFF_IDS: return
     from handlers.admin import moderator_panel
     await moderator_panel(message)
 
@@ -225,16 +196,33 @@ async def open_moder_panel_kb(message: Message):
 @user_router.message(F.text.in_(["❌ Отменить ответ", "❌ Отменить отправку"]))
 async def cancel_reply(message: Message):
     async with active_replies_lock:
-        active_replies.pop(message.from_user.id, None)
+        data = active_replies.pop(message.from_user.id, None)
     mark_replies_dirty()
+    
+    # Редактируем сообщение-приглашение, если оно есть
+    if data and data.get("prompt_id"):
+        try:
+            await message.bot.edit_message_text(
+                chat_id=message.from_user.id,
+                message_id=data["prompt_id"],
+                text="❌ <b>Действие отменено.</b>",
+                parse_mode=ParseMode.HTML
+            )
+        except Exception:
+            pass
+            
     mode = get_user_mode(message.from_user.id)
-    await message.answer("❌ Действие отменено.", reply_markup=get_main_keyboard(message.from_user.id, mode=mode))
+    await message.answer("Меню обновлено 👇", reply_markup=get_main_keyboard(message.from_user.id, mode=mode))
 
 
 @user_router.callback_query(F.data == "reply_to_post")
 async def ask_for_reply(callback: CallbackQuery):
     async with active_replies_lock:
-        active_replies[callback.from_user.id] = callback.message.message_id
+        active_replies[callback.from_user.id] = {
+            "msg_id": callback.message.message_id,
+            "time": datetime.now().timestamp(),
+            "prompt_id": None
+        }
     mark_replies_dirty()
     try:
         await callback.answer(url=f"https://t.me/PodslushanoNGHU_bot?start=reply")
@@ -254,7 +242,6 @@ async def handle_all_messages(message: Message):
     text = message.text or message.caption or ""
     now = datetime.now(ZoneInfo("Asia/Novosibirsk")).strftime("%d.%m.%Y %H:%M:%S")
 
-    # --- ПРОВЕРКА НА НЕАНОНИМНОЕ СООБЩЕНИЕ ---
     is_signed = False
     if text.lower().startswith("!неаноним"):
         is_signed = True
@@ -283,14 +270,28 @@ async def handle_all_messages(message: Message):
         await message.answer(f"⛔ Вы временно не можете отправлять сообщения. Осталось: <b>{minutes} мин.</b>", parse_mode=ParseMode.HTML)
         return
 
-    # Проверяем и атомарно забираем original_msg_id из active_replies
+    # Достаем данные ответа
     async with active_replies_lock:
-        original_msg_id = active_replies.pop(user.id, None)
+        reply_data = active_replies.pop(user.id, None)
     
     mode = get_user_mode(user.id)
 
-    if original_msg_id is not None:
+    if reply_data is not None:
         mark_replies_dirty()
+        original_msg_id = reply_data.get("msg_id") if isinstance(reply_data, dict) else reply_data
+        prompt_id = reply_data.get("prompt_id") if isinstance(reply_data, dict) else None
+
+        # Убираем сообщение-приглашение (редактируем)
+        if prompt_id:
+            try:
+                await message.bot.edit_message_text(
+                    chat_id=user.id,
+                    message_id=prompt_id,
+                    text="✅ <b>Ответ отправлен!</b>",
+                    parse_mode=ParseMode.HTML
+                )
+            except Exception:
+                pass
 
         base_caption = esc(text) if text else ""
         if is_signed:
@@ -318,10 +319,7 @@ async def handle_all_messages(message: Message):
             reply_to_log_id = await get_log_msg_id(original_msg_id)
             try:
                 log_msg = await message.bot.send_message(
-                    LOG_CHAT_ID, log_text,
-                    parse_mode=ParseMode.HTML,
-                    reply_markup=log_kb,
-                    reply_to_message_id=reply_to_log_id
+                    LOG_CHAT_ID, log_text, parse_mode=ParseMode.HTML, reply_markup=log_kb, reply_to_message_id=reply_to_log_id
                 )
                 await save_log_msg_id(sent_reply.message_id, log_msg.message_id)
             except Exception as e:
@@ -331,7 +329,6 @@ async def handle_all_messages(message: Message):
 
             channel_kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="📢 Перейти к сообщению", url=reply_link)]])
             
-            # Возвращаем меню
             await message.answer("✅ Твой ответ опубликован в канале!", reply_markup=get_main_keyboard(message.from_user.id, mode=mode))
             await message.answer("🔗 Ссылка на пост:", reply_markup=channel_kb)
         except Exception as e:
@@ -382,15 +379,13 @@ async def handle_all_messages(message: Message):
     channel_kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="📢 Перейти к сообщению", url=msg_link)]])
     answer_text = "✅ Неанонимное сообщение отправлено в канал." if is_signed else "✅ Сообщение отправлено в канал анонимно."
     
-    # Возвращаем меню
     await message.answer(answer_text, reply_markup=get_main_keyboard(message.from_user.id, mode=mode))
     await message.answer("🔗 Ссылка на сообщение:", reply_markup=channel_kb)
 
 
 @user_router.message()
 async def handle_other_messages(message: Message):
-    if message.from_user.id in ADMIN_IDS:
-        return
+    if message.from_user.id in ADMIN_IDS: return
     await save_user(message.from_user.id)
     await save_username(message.from_user.username, message.from_user.id)
     await message.answer("⚠️ Пожалуйста, отправляй текст, фото, видео, аудио, стикеры или геолокацию.")
