@@ -4,7 +4,7 @@ import logging
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from config import CHANNEL_ID, LOG_CHAT_ID, DELAYED_FILE
-from services.storage import delayed_posts, delayed_posts_lock, muted_users, muted_lock, save_muted
+from services.storage import delayed_posts, delayed_posts_lock, muted_users, muted_lock, save_muted, active_replies, active_replies_lock, mark_replies_dirty
 from aiogram.enums import ParseMode
 
 async def send_delayed_post(bot, post: dict):
@@ -77,3 +77,48 @@ async def cleanup_muted():
         except Exception as e:
             logging.error(f"Ошибка в cleanup_muted: {e}")
         await asyncio.sleep(3600)
+
+async def cleanup_expired_replies(bot):
+    """Раз в минуту проверяет, не истекло ли время на ответ (15 минут)."""
+    while True:
+        try:
+            now_ts = datetime.now().timestamp()
+            expired_users = []
+            
+            async with active_replies_lock:
+                for uid, data in list(active_replies.items()):
+                    if isinstance(data, dict) and now_ts - data.get("time", now_ts) > 15 * 60:
+                        expired_users.append((uid, data))
+            
+            for uid, data in expired_users:
+                prompt_id = data.get("prompt_id")
+                if prompt_id:
+                    try:
+                        await bot.edit_message_text(
+                            chat_id=uid,
+                            message_id=prompt_id,
+                            text="⌛ <b>Время на ответ истекло.</b>\nПожалуйста, нажмите кнопку «Ответить» под постом заново.",
+                            parse_mode=ParseMode.HTML
+                        )
+                    except Exception:
+                        pass
+                
+                # Обновляем клавиатуру
+                from handlers.user import get_main_keyboard, get_user_mode
+                try:
+                    await bot.send_message(
+                        uid, 
+                        "Меню обновлено 👇", 
+                        reply_markup=get_main_keyboard(uid, mode=get_user_mode(uid))
+                    )
+                except Exception:
+                    pass
+                
+                async with active_replies_lock:
+                    active_replies.pop(uid, None)
+                mark_replies_dirty()
+                
+        except Exception as e:
+            logging.error(f"Ошибка в cleanup_expired_replies: {e}")
+        
+        await asyncio.sleep(60)
