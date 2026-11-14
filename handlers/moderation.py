@@ -6,7 +6,7 @@ from aiogram.types import CallbackQuery, Message, InlineKeyboardMarkup, InlineKe
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.enums import ParseMode
-from config import CHANNEL_ID, ADMIN_IDS
+from config import CHANNEL_ID, LOG_CHAT_ID, ADMIN_IDS
 from services.storage import muted_users, save_muted
 from services.media import esc
 
@@ -27,10 +27,21 @@ async def delete_message_handler(callback: CallbackQuery):
         return await callback.answer("❌ Некорректный ID", show_alert=True)
     try:
         await callback.bot.delete_message(chat_id=CHANNEL_ID, message_id=msg_id)
+        
+        # Добавляем подпись, кто удалил
+        admin_name = esc(callback.from_user.full_name)
+        admin_username = f"@{callback.from_user.username}" if callback.from_user.username else "нет username"
+        
         try:
-            await callback.message.edit_reply_markup(reply_markup=None)
+            new_text = callback.message.html_text + f"\n\n🗑 <b>Удалено:</b> {admin_name} ({admin_username})"
+            await callback.message.edit_text(new_text, parse_mode=ParseMode.HTML, reply_markup=None)
         except Exception:
-            pass
+            # Если не удалось отредактировать (например, это фото), просто убираем кнопки
+            try:
+                await callback.message.edit_reply_markup(reply_markup=None)
+            except Exception:
+                pass
+                
         await callback.answer("✅ Удалено!", show_alert=True)
     except Exception as e:
         await callback.answer(f"❌ Ошибка: {e}", show_alert=True)
@@ -103,16 +114,15 @@ async def process_mute_reason(message: Message, state: FSMContext):
 
     reason = message.text.strip()
     if reason.lower() == "/skip":
-        reason = ""
+        reason = "Не указана"
 
-    # Берем текущее время по Новосибирску
     now_nsk = datetime.now(ZoneInfo("Asia/Novosibirsk"))
     mute_until = (now_nsk + timedelta(minutes=minutes)).timestamp()
     muted_users[target_user_id] = mute_until
     await save_muted()
 
     notification = f"⚠️ <b>Внимание!</b>\n\nАдминистрация ограничила вашу возможность отправлять сообщения на <b>{minutes} минут</b>."
-    if reason:
+    if reason != "Не указана":
         notification += f"\n<b>Причина:</b> {esc(reason)}"
 
     try:
@@ -122,9 +132,28 @@ async def process_mute_reason(message: Message, state: FSMContext):
 
     await message.answer(
         f"✅ Пользователь <code>{target_user_id}</code> замучен на {minutes} мин.\n"
-        f"<b>Причина:</b> {esc(reason) if reason else 'не указана'}",
+        f"<b>Причина:</b> {esc(reason)}",
         parse_mode=ParseMode.HTML
     )
+
+    # Отправка карточки мута в лог-группу
+    try:
+        admin_name = esc(message.from_user.full_name)
+        admin_username = f"@{message.from_user.username}" if message.from_user.username else "нет username"
+        
+        log_text = (
+            f"⚠️ <b>Пользователь замучен</b>\n"
+            f"➖➖➖➖➖➖➖➖➖➖\n"
+            f"👤 <b>Нарушитель:</b> <code>{target_user_id}</code>\n"
+            f"🛡 <b>Кто замутил:</b> {admin_name} ({admin_username})\n"
+            f"⏳ <b>Длительность:</b> {minutes} минут\n"
+            f"📝 <b>Причина:</b> {esc(reason)}\n"
+            f"➖➖➖➖➖➖➖➖➖➖"
+        )
+        await message.bot.send_message(LOG_CHAT_ID, log_text, parse_mode=ParseMode.HTML)
+    except Exception as e:
+        logging.error(f"Ошибка отправки лога мута: {e}")
+
     await state.clear()
 
 @moderation_router.callback_query(F.data.startswith("unmute_"))
@@ -149,10 +178,32 @@ async def unmute_handler(callback: CallbackQuery):
             )
         except Exception as e:
             logging.error(f"Не удалось уведомить о размуте {target_user_id}: {e}")
+        
+        admin_name = esc(callback.from_user.full_name)
+        admin_username = f"@{callback.from_user.username}" if callback.from_user.username else "нет username"
+        
         try:
-            await callback.message.edit_text(f"✅ Пользователь <code>{target_user_id}</code> размучен.", parse_mode=ParseMode.HTML)
+            await callback.message.edit_text(
+                f"✅ Пользователь <code>{target_user_id}</code> размучен.\n"
+                f"👤 <b>Кто размутил:</b> {admin_name} ({admin_username})", 
+                parse_mode=ParseMode.HTML
+            )
         except Exception:
             pass
+
+        # Отправка карточки размута в лог-группу
+        try:
+            log_text = (
+                f"✅ <b>Пользователь размучен</b>\n"
+                f"➖➖➖➖➖➖➖➖➖➖\n"
+                f"👤 <b>Нарушитель:</b> <code>{target_user_id}</code>\n"
+                f"🛡 <b>Кто размутил:</b> {admin_name} ({admin_username})\n"
+                f"➖➖➖➖➖➖➖➖➖➖"
+            )
+            await callback.bot.send_message(LOG_CHAT_ID, log_text, parse_mode=ParseMode.HTML)
+        except Exception as e:
+            logging.error(f"Ошибка отправки лога размута: {e}")
+
     else:
         try:
             await callback.message.edit_text("ℹ️ Пользователь не в муте.", parse_mode=ParseMode.HTML)
