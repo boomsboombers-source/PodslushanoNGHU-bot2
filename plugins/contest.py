@@ -16,6 +16,8 @@ import json
 import logging
 import asyncio
 
+from datetime import datetime
+from zoneinfo import ZoneInfo
 from aiogram import Router, F
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.enums import ParseMode
@@ -494,13 +496,28 @@ async def handle_contest_photo(message: Message):
     await message.answer("✅ Ваша работа принята на конкурс! Удачи! 🍀")
 
     try:
+        username = f"@{message.from_user.username}" if message.from_user.username else "нет username"
+        now = datetime.now(ZoneInfo("Asia/Novosibirsk")).strftime("%d.%m.%Y %H:%M:%S") # Импортируй ZoneInfo и datetime, если их нет
+        
         log_kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="❌ Отклонить вариант (нарушение правил)", callback_data=f"reject_{user_id}")]
+            [InlineKeyboardButton(text="❌ Отклонить вариант", callback_data=f"reject_{user_id}")]
         ])
+        
+        log_caption = (
+            f"🎨 <b>Новая работа на конкурс</b>\n"
+            f"➖➖➖➖➖➖➖➖➖➖\n"
+            f"👤 <b>Участник:</b> {message.from_user.full_name}\n"
+            f"🔗 <b>Юзернейм:</b> {username}\n"
+            f"🆔 <b>ID:</b> <code>{message.from_user.id}</code>\n"
+            f"🕒 <b>Время:</b> {now}\n"
+            f"➖➖➖➖➖➖➖➖➖➖\n"
+            f"<i>Работа добавлена в очередь на публикацию.</i>"
+        )
+        
         await message.bot.send_photo(
             LOG_CHAT_ID,
             photo=message.photo[-1].file_id,
-            caption=f"🎨 <b>Новый участник конкурса!</b>\n👤 {message.from_user.full_name}\n🆔 ID: <code>{message.from_user.id}</code>",
+            caption=log_caption,
             reply_markup=log_kb,
             parse_mode=ParseMode.HTML
         )
@@ -535,13 +552,28 @@ async def handle_contest_document(message: Message):
     await message.answer("✅ Ваша работа (файл) принята на конкурс! Удачи! 🍀")
 
     try:
+        username = f"@{message.from_user.username}" if message.from_user.username else "нет username"
+        now = datetime.now(ZoneInfo("Asia/Novosibirsk")).strftime("%d.%m.%Y %H:%M:%S")
+        
         log_kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="❌ Отклонить вариант", callback_data=f"reject_{user_id}")]
         ])
+        
+        log_caption = (
+            f"🎨 <b>Новая работа на конкурс (файл)</b>\n"
+            f"➖➖➖➖➖➖➖➖➖➖\n"
+            f"👤 <b>Участник:</b> {message.from_user.full_name}\n"
+            f"🔗 <b>Юзернейм:</b> {username}\n"
+            f"🆔 <b>ID:</b> <code>{message.from_user.id}</code>\n"
+            f"🕒 <b>Время:</b> {now}\n"
+            f"➖➖➖➖➖➖➖➖➖➖\n"
+            f"<i>Работа добавлена в очередь на публикацию.</i>"
+        )
+        
         await message.bot.send_document(
             LOG_CHAT_ID,
             document=message.document.file_id,
-            caption=f"🎨 <b>Новый участник конкурса (файл)!</b>\n👤 {message.from_user.full_name}\n🆔 ID: <code>{message.from_user.id}</code>",
+            caption=log_caption,
             reply_markup=log_kb,
             parse_mode=ParseMode.HTML
         )
