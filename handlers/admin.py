@@ -15,7 +15,7 @@ from aiogram.fsm.state import State, StatesGroup
 
 from config import (
     CHANNEL_ID, LOG_CHAT_ID, ADMIN_IDS, MODERATOR_IDS,
-    SCHEDULE_FILE, SCHEDULE2_FILE, DELAYED_FILE, DATA_DIR
+    SCHEDULE_FILE, SCHEDULE2_FILE, DELAYED_FILE, DATA_DIR, get_theme
 )
 from services.storage import (
     cached_users, active_replies, mark_replies_dirty, save_user, save_username,
@@ -69,6 +69,7 @@ async def _get_stats_from_db() -> tuple[int, int]:
         return 0, 0
 
 async def _build_stats_text(is_admin: bool = False) -> str:
+    E = get_theme()
     total_msgs, today_msgs = await _get_stats_from_db()
     muted_list = ""
     if muted_users:
@@ -89,7 +90,7 @@ async def _build_stats_text(is_admin: bool = False) -> str:
         muted_list = "\n\n🔇 <b>Замученных нет.</b>"
 
     return (
-        f"📊 <b>Статистика:</b>\n"
+        f"{E['calendar']} <b>Статистика:</b>\n"
         f"👥 Пользователей: <b>{len(cached_users)}</b>\n"
         f"💬 В ожидании: <b>{len(active_replies)}</b>\n"
         f"📨 Сообщений всего: <b>{total_msgs}</b>\n"
@@ -122,6 +123,7 @@ def _render_plugins_menu(for_moder: bool) -> str:
 @admin_router.message(Command("admin", "админ"))
 @admin_router.message(F.text.lower().in_(["!admin", "!админ"]))
 async def admin_panel(message: Message):
+    E = get_theme()
     if message.from_user.id not in ADMIN_IDS: return
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📊 Статистика", callback_data="admin_stats")],
@@ -129,10 +131,11 @@ async def admin_panel(message: Message):
         [InlineKeyboardButton(text="🔌 Плагины", callback_data="admin_plugins")],
         [InlineKeyboardButton(text="📚 Команды", callback_data="admin_settings")],
     ])
-    await message.answer("🛠 <b>Админ-панель</b>\nВыбери действие:", reply_markup=kb, parse_mode=ParseMode.HTML)
+    await message.answer(f"{E['doc']} <b>Админ-панель</b>\nВыбери действие:", reply_markup=kb, parse_mode=ParseMode.HTML)
 
 @admin_router.callback_query(F.data.startswith("admin_"))
 async def admin_menu_handler(callback: CallbackQuery, state: FSMContext):
+    E = get_theme()
     if callback.from_user.id not in ADMIN_IDS: return
     if callback.message is None:
         return await callback.answer("Сообщение недоступно", show_alert=True)
@@ -181,9 +184,9 @@ async def admin_menu_handler(callback: CallbackQuery, state: FSMContext):
             [InlineKeyboardButton(text="📚 Команды", callback_data="admin_settings")],
         ])
         try:
-            await callback.message.edit_text("🛠 <b>Админ-панель</b>\nВыбери действие:", reply_markup=kb, parse_mode=ParseMode.HTML)
+            await callback.message.edit_text(f"{E['doc']} <b>Админ-панель</b>\nВыбери действие:", reply_markup=kb, parse_mode=ParseMode.HTML)
         except TelegramBadRequest:
-            await callback.message.answer("🛠 <b>Админ-панель</b>\nВыбери действие:", reply_markup=kb, parse_mode=ParseMode.HTML)
+            await callback.message.answer(f"{E['doc']} <b>Админ-панель</b>\nВыбери действие:", reply_markup=kb, parse_mode=ParseMode.HTML)
 
     elif action == "settings":
         core = (
@@ -209,6 +212,9 @@ async def admin_menu_handler(callback: CallbackQuery, state: FSMContext):
             "• <code>!статистика</code> — общая статистика.\n"
             "• <code>!очистить_ответы</code> — сброс ожиданий.\n"
             "• <code>!синхрон</code> — удалить мертвых и обновить юзернеймы.\n\n"
+            "🎨 <b>Сезонные темы (для тестов)</b>\n"
+            "• <code>!тема [название]</code> — принудительно сменить оформление.\n"
+            "• <code>!тема reset</code> — вернуть автоматическую смену по дате.\n\n"
             "🕵️ <b>Аналитика (по базе данных)</b>\n"
             "• <code>!кто [ID|@username]</code> — узнать инфу о пользователе.\n"
             "• <code>!топ</code> — топ-10 самых активных.\n"
@@ -221,6 +227,7 @@ async def admin_menu_handler(callback: CallbackQuery, state: FSMContext):
 # ==============================================================================
 
 async def _perform_sync(message: Message):
+    E = get_theme()
     status_msg = await message.answer("⏳ <b>Начинаю синхронизацию...</b> Это может занять время.", parse_mode=ParseMode.HTML)
     
     users = get_all_users()
@@ -248,7 +255,7 @@ async def _perform_sync(message: Message):
     if dead_ids:
         await remove_dead_users(dead_ids)
         
-    report_lines = ["✅ <b>Синхронизация завершена!</b>\n", f"🔄 Обновлено юзернеймов: <b>{updated_usernames}</b>"]
+    report_lines = [f"{E['ok']} <b>Синхронизация завершена!</b>\n", f"🔄 Обновлено юзернеймов: <b>{updated_usernames}</b>"]
     
     if dead_ids:
         report_lines.append(f"🗑 Удалено мертвых: <b>{len(dead_ids)}</b>\n")
@@ -301,10 +308,11 @@ async def tools_update_changes(callback: CallbackQuery, state: FSMContext):
 
 @admin_router.message(ToolsStates.waiting_for_schedule, F.photo)
 async def save_schedule_photo(message: Message, state: FSMContext):
+    E = get_theme()
     try:
         with open(SCHEDULE_FILE, "w", encoding="utf-8") as f:
             f.write(message.photo[-1].file_id)
-        await message.answer("✅ Расписание успешно обновлено!", reply_markup=get_main_keyboard(message.from_user.id, mode=get_user_mode(message.from_user.id)))
+        await message.answer(f"{E['ok']} Расписание успешно обновлено!", reply_markup=get_main_keyboard(message.from_user.id, mode=get_user_mode(message.from_user.id)))
     except Exception as e:
         await message.answer(f"❌ Ошибка сохранения: {e}", reply_markup=get_main_keyboard(message.from_user.id, mode=get_user_mode(message.from_user.id)))
     finally:
@@ -312,10 +320,11 @@ async def save_schedule_photo(message: Message, state: FSMContext):
 
 @admin_router.message(ToolsStates.waiting_for_changes, F.photo)
 async def save_changes_photo(message: Message, state: FSMContext):
+    E = get_theme()
     try:
         with open(SCHEDULE2_FILE, "w", encoding="utf-8") as f:
             f.write(message.photo[-1].file_id)
-        await message.answer("✅ Замены успешно обновлены!", reply_markup=get_main_keyboard(message.from_user.id, mode=get_user_mode(message.from_user.id)))
+        await message.answer(f"{E['ok']} Замены успешно обновлены!", reply_markup=get_main_keyboard(message.from_user.id, mode=get_user_mode(message.from_user.id)))
     except Exception as e:
         await message.answer(f"❌ Ошибка сохранения: {e}", reply_markup=get_main_keyboard(message.from_user.id, mode=get_user_mode(message.from_user.id)))
     finally:
@@ -324,9 +333,10 @@ async def save_changes_photo(message: Message, state: FSMContext):
 @admin_router.message(ToolsStates.waiting_for_schedule)
 @admin_router.message(ToolsStates.waiting_for_changes)
 async def catch_wrong_input(message: Message, state: FSMContext):
+    E = get_theme()
     if message.text and message.text.strip() == "❌ Отмена":
         await state.clear()
-        await message.answer("❌ Действие отменено.", reply_markup=get_main_keyboard(message.from_user.id, mode=get_user_mode(message.from_user.id)))
+        await message.answer(f"{E['cancel']} Действие отменено.", reply_markup=get_main_keyboard(message.from_user.id, mode=get_user_mode(message.from_user.id)))
         return
     await message.answer("⚠️ Ожидается фотография (или нажмите «❌ Отмена»).", reply_markup=ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="❌ Отмена")]], resize_keyboard=True))
 
@@ -336,25 +346,27 @@ async def catch_wrong_input(message: Message, state: FSMContext):
 
 @admin_router.message((F.text | F.caption).startswith("!расписание"), F.from_user.id.in_(ADMIN_IDS + MODERATOR_IDS))
 async def set_schedule(message: Message):
+    E = get_theme()
     if not message.photo:
         await message.answer("❌ Пришлите команду вместе с картинкой расписания.")
         return
     try:
         with open(SCHEDULE_FILE, "w", encoding="utf-8") as f:
             f.write(message.photo[-1].file_id)
-        await message.answer("✅ Расписание успешно обновлено!")
+        await message.answer(f"{E['ok']} Расписание успешно обновлено!")
     except Exception as e:
         await message.answer(f"❌ Ошибка сохранения: {e}")
 
 @admin_router.message((F.text | F.caption).startswith("!замены"), F.from_user.id.in_(ADMIN_IDS + MODERATOR_IDS))
 async def set_schedule2(message: Message):
+    E = get_theme()
     if not message.photo:
         await message.answer("❌ Пришлите команду вместе с картинкой замен.")
         return
     try:
         with open(SCHEDULE2_FILE, "w", encoding="utf-8") as f:
             f.write(message.photo[-1].file_id)
-        await message.answer("✅ Замены обновлены!")
+        await message.answer(f"{E['ok']} Замены обновлены!")
     except Exception as e:
         await message.answer(f"❌ Ошибка сохранения: {e}")
 
@@ -580,6 +592,28 @@ async def admin_top_users(message: Message):
         lines.append(f"{i}. {esc(name)} (<code>{uid}</code>) — <b>{count}</b> сообщений")
     await message.answer("\n".join(lines), parse_mode=ParseMode.HTML)
 
+@admin_router.message(F.text.lower().startswith("!тема"), F.from_user.id.in_(ADMIN_IDS))
+async def force_theme(message: Message):
+    if message.from_user.id not in ADMIN_IDS: return
+    import config
+    
+    # Убираем "!тема" из текста, чтобы получить аргумент
+    args = message.text.split(maxsplit=1)
+    if len(args) < 2:
+        themes_list = ", ".join(config.THEMES.keys())
+        await message.answer(f"Доступные темы: <code>{themes_list}</code>\nПример: <code>!тема new_year</code>\nЧтобы сбросить: <code>!тема reset</code>", parse_mode=ParseMode.HTML)
+        return
+    
+    theme_name = args[1].strip().lower()
+    if theme_name == "reset" or theme_name == "auto":
+        config.FORCE_THEME = None
+        await message.answer("✅ Тема сброшена на автоматическую (по дате).")
+    elif theme_name in config.THEMES:
+        config.FORCE_THEME = theme_name
+        await message.answer(f"✅ Тема принудительно изменена на: <b>{theme_name}</b>", parse_mode=ParseMode.HTML)
+    else:
+        await message.answer("❌ Такой темы нет. Напишите <code>!тема</code> для списка.", parse_mode=ParseMode.HTML)
+
 # ==============================================================================
 # ================= РАССЫЛКА С ОЧИСТКОЙ ========================================
 # ==============================================================================
@@ -624,6 +658,7 @@ async def broadcast(message: Message):
 @admin_router.message(Command("moder", "модер"))
 @admin_router.message(F.text.lower().in_(["!moder", "!модер"]))
 async def moderator_panel(message: Message):
+    E = get_theme()
     if message.from_user.id not in MODERATOR_IDS and message.from_user.id not in ADMIN_IDS: return
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📖 Инструкция", callback_data="moder_guide")],
@@ -631,7 +666,7 @@ async def moderator_panel(message: Message):
         [InlineKeyboardButton(text="🛠 Инструменты", callback_data="moder_tools")],
         [InlineKeyboardButton(text="📚 Команды модератора", callback_data="moder_settings")],
     ])
-    await message.answer("🛠 <b>Панель модератора</b>\nВыбери действие:", reply_markup=kb, parse_mode=ParseMode.HTML)
+    await message.answer(f"{E['doc']} <b>Панель модератора</b>\nВыбери действие:", reply_markup=kb, parse_mode=ParseMode.HTML)
 
 @admin_router.callback_query(F.data == "moder_stats")
 async def moderator_stats(callback: CallbackQuery):
@@ -655,6 +690,7 @@ async def moderator_tools(callback: CallbackQuery):
 
 @admin_router.callback_query(F.data == "moder_back")
 async def moderator_back(callback: CallbackQuery):
+    E = get_theme()
     if callback.from_user.id not in MODERATOR_IDS and callback.from_user.id not in ADMIN_IDS: return
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📖 Инструкция", callback_data="moder_guide")],
@@ -663,9 +699,9 @@ async def moderator_back(callback: CallbackQuery):
         [InlineKeyboardButton(text="📚 Команды модератора", callback_data="moder_settings")],
     ])
     try:
-        await callback.message.edit_text("🛠 <b>Панель модератора</b>\nВыбери действие:", reply_markup=kb, parse_mode=ParseMode.HTML)
+        await callback.message.edit_text(f"{E['doc']} <b>Панель модератора</b>\nВыбери действие:", reply_markup=kb, parse_mode=ParseMode.HTML)
     except TelegramBadRequest:
-        await callback.message.answer("🛠 <b>Панель модератора</b>\nВыбери действие:", reply_markup=kb, parse_mode=ParseMode.HTML)
+        await callback.message.answer(f"{E['doc']} <b>Панель модератора</b>\nВыбери действие:", reply_markup=kb, parse_mode=ParseMode.HTML)
     await callback.answer()
 
 @admin_router.callback_query(F.data == "moder_settings")
