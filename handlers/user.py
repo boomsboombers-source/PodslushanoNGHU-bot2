@@ -17,6 +17,21 @@ from services.database import log_message_db, get_username_by_id_db
 
 user_router = Router()
 
+# Словарь для перевода технических типов контента в понятные эмодзи
+CONTENT_TYPES = {
+    "text": "📝 Текст",
+    "photo": "📸 Фото",
+    "video": "🎥 Видео",
+    "audio": "🎵 Аудио",
+    "document": "📄 Документ",
+    "voice": "🎙 Голосовое",
+    "video_note": "🟢 Кружочек",
+    "sticker": "🖼 Стикер",
+    "contact": "📞 Контакт",
+    "location": "📍 Локация",
+    "reply": "💬 Ответ"
+}
+
 def get_user_mode(user_id: int) -> str:
     if user_id in ADMIN_IDS: return "admin"
     if user_id in MODERATOR_IDS: return "moder"
@@ -66,7 +81,6 @@ async def cmd_start(message: Message):
         cancel_kb = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="❌ Отменить ответ")]], resize_keyboard=True)
         prompt_msg = await message.answer("✍️ <b>Отлично!</b> Напиши или прикрепи то, что хочешь отправить в ответ на пост:", parse_mode=ParseMode.HTML, reply_markup=cancel_kb)
         
-        # Сохраняем ID сообщения, чтобы потом его редактировать по таймеру
         async with active_replies_lock:
             if message.from_user.id in active_replies:
                 active_replies[message.from_user.id]["prompt_id"] = prompt_msg.message_id
@@ -199,7 +213,6 @@ async def cancel_reply(message: Message):
         data = active_replies.pop(message.from_user.id, None)
     mark_replies_dirty()
     
-    # Редактируем сообщение-приглашение, если оно есть
     if data and data.get("prompt_id"):
         try:
             await message.bot.edit_message_text(
@@ -270,18 +283,25 @@ async def handle_all_messages(message: Message):
         await message.answer(f"⛔ Вы временно не можете отправлять сообщения. Осталось: <b>{minutes} мин.</b>", parse_mode=ParseMode.HTML)
         return
 
-    # Достаем данные ответа
     async with active_replies_lock:
         reply_data = active_replies.pop(user.id, None)
     
     mode = get_user_mode(user.id)
+
+    # Подготовка текста для лога
+    display_text = esc(text) if text else "—"
+    if len(display_text) > 500:
+        display_text = display_text[:500] + "...\n<i>(текст обрезан)</i>"
+    
+    content_label = CONTENT_TYPES.get(message.content_type, message.content_type)
+    username = f"@{user.username}" if user.username else "нет username"
+    sign_status = "👤 Неанонимно" if is_signed else "🔒 Анонимно"
 
     if reply_data is not None:
         mark_replies_dirty()
         original_msg_id = reply_data.get("msg_id") if isinstance(reply_data, dict) else reply_data
         prompt_id = reply_data.get("prompt_id") if isinstance(reply_data, dict) else None
 
-        # Убираем сообщение-приглашение (редактируем)
         if prompt_id:
             try:
                 await message.bot.edit_message_text(
@@ -313,14 +333,31 @@ async def handle_all_messages(message: Message):
 
             log_kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔗 Перейти", url=reply_link)], [InlineKeyboardButton(text="🗑 Удалить", callback_data=f"delete_msg_{sent_reply.message_id}")], [InlineKeyboardButton(text="⚠️ Мут", callback_data=f"mute_menu_{user.id}")]])
             
-            sign_mark = " 👤" if is_signed else ""
-            log_text = f"💬 <b>Ответ</b>{sign_mark}\n👤 <b>Автор:</b> {esc(user.full_name)}\n🔗 Username: @{esc(user.username) if user.username else 'нет'}\n🆔 ID: <code>{user.id}</code>\n🕒 Время: {now}\n📝 <b>Текст/Подпись:</b> {esc(text)}"
+            log_text = (
+                f"📥 <b>Новое сообщение в канале</b> (Ответ на пост)\n"
+                f"➖➖➖➖➖➖➖➖➖➖\n"
+                f"👤 <b>Автор:</b> {esc(user.full_name)}\n"
+                f"🔗 <b>Юзернейм:</b> {esc(username)}\n"
+                f"🆔 <b>ID:</b> <code>{user.id}</code>\n"
+                f"🕒 <b>Время:</b> {now}\n"
+                f"📎 <b>Тип:</b> {content_label}\n"
+                f"🔒 <b>Статус:</b> {sign_status}\n"
+                f"➖➖➖➖➖➖➖➖➖➖\n"
+                f"📝 <b>Текст:</b>\n<i>{display_text}</i>"
+            )
 
             reply_to_log_id = await get_log_msg_id(original_msg_id)
             try:
-                log_msg = await message.bot.send_message(
-                    LOG_CHAT_ID, log_text, parse_mode=ParseMode.HTML, reply_markup=log_kb, reply_to_message_id=reply_to_log_id
-                )
+                # Отправляем карточку с медиа (если есть)
+                log_msg = await _send_media_with_caption(message.bot, LOG_CHAT_ID, message, caption=log_text, parse_mode=ParseMode.HTML, reply_to_message_id=reply_to_log_id)
+                # Если сообщение текстовое, _send_media_with_caption отправит текст с reply_markup, но лучше сделать отдельно для единообразия:
+                if not message.photo and not message.video and not message.document and not message.audio and not message.voice and not message.video_note and not message.sticker:
+                    # Если это текст, перезаписываем его с кнопками
+                    await message.bot.edit_message_reply_markup(chat_id=LOG_CHAT_ID, message_id=log_msg.message_id, reply_markup=log_kb)
+                else:
+                    # Для медиа прикрепляем кнопки
+                    await message.bot.edit_message_reply_markup(chat_id=LOG_CHAT_ID, message_id=log_msg.message_id, reply_markup=log_kb)
+                
                 await save_log_msg_id(sent_reply.message_id, log_msg.message_id)
             except Exception as e:
                 logging.error(f"Лог ответа: {e}")
@@ -364,12 +401,23 @@ async def handle_all_messages(message: Message):
     msg_link = f"https://t.me/c/{chat_id_str}/{sent_msg.message_id}"
     log_kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔗 Перейти к сообщению", url=msg_link)], [InlineKeyboardButton(text="🗑 Удалить", callback_data=f"delete_msg_{sent_msg.message_id}")], [InlineKeyboardButton(text="⚠️ Мут", callback_data=f"mute_menu_{user.id}")]])
 
-    username = f"@{user.username}" if user.username else "нет username"
-    sign_mark = " 👤" if is_signed else ""
-    log_text = f"👤 <b>Автор:</b> {esc(user.full_name)}{sign_mark}\n🔗 Username: {esc(username)}\n🆔 ID: <code>{user.id}</code>\n🕒 Время: {now}\n💬 <b>Тип:</b> {message.content_type}\n📝 <b>Текст/Подпись:</b> {esc(text)}"
+    log_text = (
+        f"📥 <b>Новое сообщение в канале</b>\n"
+        f"➖➖➖➖➖➖➖➖➖➖\n"
+        f"👤 <b>Автор:</b> {esc(user.full_name)}\n"
+        f"🔗 <b>Юзернейм:</b> {esc(username)}\n"
+        f"🆔 <b>ID:</b> <code>{user.id}</code>\n"
+        f"🕒 <b>Время:</b> {now}\n"
+        f"📎 <b>Тип:</b> {content_label}\n"
+        f"🔒 <b>Статус:</b> {sign_status}\n"
+        f"➖➖➖➖➖➖➖➖➖➖\n"
+        f"📝 <b>Текст:</b>\n<i>{display_text}</i>"
+    )
 
     try:
-        log_msg = await message.bot.send_message(LOG_CHAT_ID, log_text, parse_mode=ParseMode.HTML, reply_markup=log_kb)
+        log_msg = await _send_media_with_caption(message.bot, LOG_CHAT_ID, message, caption=log_text, parse_mode=ParseMode.HTML)
+        # Прикрепляем кнопки к лог-сообщению
+        await message.bot.edit_message_reply_markup(chat_id=LOG_CHAT_ID, message_id=log_msg.message_id, reply_markup=log_kb)
         await save_log_msg_id(sent_msg.message_id, log_msg.message_id)
     except Exception as e:
         logging.error(f"Лог чат: {e}")
