@@ -382,21 +382,58 @@ async def admin_message(message: Message):
         reply_to = active_replies.pop(message.from_user.id, None)
     if reply_to is not None:
         mark_replies_dirty()
+    
     admin_text = f"<b>⚠️ Сообщение от админа:</b>\n\n{esc(clean_text)}"
+    
     async def _send(reply_id):
         if reply_id and not message.photo and not message.video and not message.document and not message.audio and not message.voice and not message.video_note and not message.sticker:
             return await message.bot.send_message(CHANNEL_ID, admin_text, parse_mode=ParseMode.HTML, reply_to_message_id=reply_id)
         else:
             return await _send_media_with_caption(message.bot, CHANNEL_ID, message, caption=admin_text, parse_mode=ParseMode.HTML, reply_to_message_id=reply_id)
+    
     try:
         try:
-            await _send(reply_to)
+            sent_msg = await _send(reply_to)
         except Exception as e:
             if "message to be replied not found" in str(e):
-                await _send(None)
+                sent_msg = await _send(None)
             else:
                 raise e
+        
         await message.answer("✅ Сообщение от админа опубликовано в канале.")
+
+        # Логирование в лог-группу
+        try:
+            chat_id_str = str(CHANNEL_ID).replace("-100", "")
+            msg_link = f"https://t.me/c/{chat_id_str}/{sent_msg.message_id}"
+            
+            log_kb = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🔗 Перейти к сообщению", url=msg_link)],
+                [InlineKeyboardButton(text="🗑 Удалить", callback_data=f"delete_msg_{sent_msg.message_id}")]
+            ])
+            
+            now = datetime.now(ZoneInfo("Asia/Novosibirsk")).strftime("%d.%m.%Y %H:%M:%S")
+            username = f"@{message.from_user.username}" if message.from_user.username else "нет username"
+            
+            display_text = esc(clean_text) if clean_text else "—"
+            if len(display_text) > 500:
+                display_text = display_text[:500] + "...\n<i>(текст обрезан)</i>"
+                
+            log_text = (
+                f"🤖 <b>Сообщение от админа</b>\n"
+                f"➖➖➖➖➖➖➖➖➖➖\n"
+                f"👤 <b>Кто отправил:</b> {esc(message.from_user.full_name)}\n"
+                f"🔗 <b>Юзернейм:</b> {esc(username)}\n"
+                f"🆔 <b>ID:</b> <code>{message.from_user.id}</code>\n"
+                f"🕒 <b>Время:</b> {now}\n"
+                f"➖➖➖➖➖➖➖➖➖➖\n"
+                f"📝 <b>Текст:</b>\n<i>{display_text}</i>"
+            )
+            
+            await message.bot.send_message(LOG_CHAT_ID, log_text, parse_mode=ParseMode.HTML, reply_markup=log_kb)
+        except Exception as e:
+            logging.error(f"Ошибка лога админа: {e}")
+
     except Exception as e:
         await message.answer(f"❌ Ошибка публикации: {e}")
 
@@ -740,13 +777,19 @@ async def moderator_message(message: Message):
             now = datetime.now(ZoneInfo("Asia/Novosibirsk")).strftime("%d.%m.%Y %H:%M:%S")
             username = f"@{message.from_user.username}" if message.from_user.username else "нет username"
             
+            display_text = esc(clean_text) if clean_text else "—"
+            if len(display_text) > 500:
+                display_text = display_text[:500] + "...\n<i>(текст обрезан)</i>"
+            
             log_text = (
                 f"🛡 <b>Сообщение от модератора</b>\n"
-                f"👤 <b>Автор:</b> {esc(message.from_user.full_name)}\n"
-                f"🔗 Username: {esc(username)}\n"
-                f"🆔 ID: <code>{message.from_user.id}</code>\n"
-                f"🕒 Время: {now}\n"
-                f"📝 <b>Текст/Подпись:</b> {esc(clean_text)}"
+                f"➖➖➖➖➖➖➖➖➖➖\n"
+                f"👤 <b>Кто отправил:</b> {esc(message.from_user.full_name)}\n"
+                f"🔗 <b>Юзернейм:</b> {esc(username)}\n"
+                f"🆔 <b>ID:</b> <code>{message.from_user.id}</code>\n"
+                f"🕒 <b>Время:</b> {now}\n"
+                f"➖➖➖➖➖➖➖➖➖➖\n"
+                f"📝 <b>Текст:</b>\n<i>{display_text}</i>"
             )
             
             await message.bot.send_message(LOG_CHAT_ID, log_text, parse_mode=ParseMode.HTML, reply_markup=log_kb)
