@@ -1,5 +1,6 @@
 import os
 from datetime import datetime
+from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
 
 # ==============================================================================
@@ -54,7 +55,7 @@ def get_current_theme() -> str:
     if FORCE_THEME:
         return FORCE_THEME
         
-    now = datetime.now()
+    now = datetime.now(ZoneInfo("Asia/Novosibirsk"))
     m, d = now.month, now.day
 
     if m == 12 or (m == 1 and d <= 14): return "new_year"
