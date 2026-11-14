@@ -7,7 +7,7 @@ from aiogram import Router, F
 from aiogram.types import Message, FSInputFile, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
 from aiogram.filters import CommandStart
 from aiogram.enums import ParseMode, ContentType
-from config import CHANNEL_ID, LOG_CHAT_ID, WELCOME_IMAGE, SCHEDULE_FILE, SCHEDULE2_FILE, ADMIN_IDS, MODERATOR_IDS, STAFF_IDS
+from config import CHANNEL_ID, LOG_CHAT_ID, WELCOME_IMAGE, SCHEDULE_FILE, SCHEDULE2_FILE, ADMIN_IDS, MODERATOR_IDS, STAFF_IDS, get_theme
 from services.storage import (
     save_user, save_username, active_replies, mark_replies_dirty, check_mute,
     active_replies_lock, save_log_msg_id, get_log_msg_id
@@ -57,6 +57,7 @@ async def get_signed_signature(user) -> str:
 
 @user_router.message(CommandStart())
 async def cmd_start(message: Message):
+    E = get_theme()
     await save_user(message.from_user.id)
     await save_username(message.from_user.username, message.from_user.id)
 
@@ -79,7 +80,7 @@ async def cmd_start(message: Message):
 
     if start_arg == "reply":
         cancel_kb = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="❌ Отменить ответ")]], resize_keyboard=True)
-        prompt_msg = await message.answer("✍️ <b>Отлично!</b> Напиши или прикрепи то, что хочешь отправить в ответ на пост:", parse_mode=ParseMode.HTML, reply_markup=cancel_kb)
+        prompt_msg = await message.answer(f"{E['star']} <b>Отлично!</b> Напиши или прикрепи то, что хочешь отправить в ответ на пост:", parse_mode=ParseMode.HTML, reply_markup=cancel_kb)
         
         async with active_replies_lock:
             if message.from_user.id in active_replies:
@@ -89,19 +90,19 @@ async def cmd_start(message: Message):
         
     if start_arg == "new":
         cancel_kb = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="❌ Отменить отправку")]], resize_keyboard=True)
-        await message.answer("📩 <b>Напиши или прикрепи сообщение, которое хочешь отправить в канал анонимно:</b>", parse_mode=ParseMode.HTML, reply_markup=cancel_kb)
+        await message.answer(f"{E['doc']} <b>Напиши или прикрепи сообщение, которое хочешь отправить в канал анонимно:</b>", parse_mode=ParseMode.HTML, reply_markup=cancel_kb)
         return
 
     if not os.path.exists(WELCOME_IMAGE):
-        await message.answer("👋 Привет! Бот работает.", reply_markup=get_main_keyboard(message.from_user.id, mode=mode))
+        await message.answer(f"{E['hi']} Привет! Бот работает.", reply_markup=get_main_keyboard(message.from_user.id, mode=mode))
     else:
         try:
             photo = FSInputFile(WELCOME_IMAGE)
             await message.answer_photo(
                 photo=photo,
                 caption=(
-                    "👋 <b>Привет!</b>\n\n"
-                    "Этот бот — официальный анонимный канал связи с <b>Подслушано НГХУ</b>.\n"
+                    f"{E['hi']} <b>Привет!</b>\n\n"
+                    f"{E['greeting']}\n"
                     "Мы публикуем твои мысли, новости и приколы без указания авторства.\n\n"
                     "📎 <b>Что можно отправить?</b>\n"
                     "Бот принимает <b>абсолютно любой контент</b>:\n"
@@ -121,7 +122,7 @@ async def cmd_start(message: Message):
             )
         except Exception as e:
             logging.error(f"Ошибка /start: {e}")
-            await message.answer("👋 Привет! Бот работает.", reply_markup=get_main_keyboard(message.from_user.id, mode=mode))
+            await message.answer(f"{E['hi']} Привет! Бот работает.", reply_markup=get_main_keyboard(message.from_user.id, mode=mode))
 
     if mode == "admin" and start_arg == "admin":
         from handlers.admin import admin_panel
@@ -209,6 +210,7 @@ async def open_moder_panel_kb(message: Message):
 
 @user_router.message(F.text.in_(["❌ Отменить ответ", "❌ Отменить отправку"]))
 async def cancel_reply(message: Message):
+    E = get_theme()
     async with active_replies_lock:
         data = active_replies.pop(message.from_user.id, None)
     mark_replies_dirty()
@@ -218,7 +220,7 @@ async def cancel_reply(message: Message):
             await message.bot.edit_message_text(
                 chat_id=message.from_user.id,
                 message_id=data["prompt_id"],
-                text="❌ <b>Действие отменено.</b>",
+                text=f"{E['cancel']} <b>Действие отменено.</b>",
                 parse_mode=ParseMode.HTML
             )
         except Exception:
@@ -249,6 +251,7 @@ async def ask_for_reply(callback: CallbackQuery):
     ContentType.CONTACT, ContentType.LOCATION
 ]))
 async def handle_all_messages(message: Message):
+    E = get_theme()
     if message.chat.type != "private": return
 
     user = message.from_user
@@ -366,7 +369,7 @@ async def handle_all_messages(message: Message):
 
             channel_kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="📢 Перейти к сообщению", url=reply_link)]])
             
-            await message.answer("✅ Твой ответ опубликован в канале!", reply_markup=get_main_keyboard(message.from_user.id, mode=mode))
+            await message.answer(f"{E['reply_text']}", reply_markup=get_main_keyboard(message.from_user.id, mode=mode))
             await message.answer("🔗 Ссылка на пост:", reply_markup=channel_kb)
         except Exception as e:
             logging.error(f"Ошибка ответа: {e}")
@@ -425,7 +428,7 @@ async def handle_all_messages(message: Message):
     await log_message_db(user.id, now, message.content_type, text)
 
     channel_kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="📢 Перейти к сообщению", url=msg_link)]])
-    answer_text = "✅ Неанонимное сообщение отправлено в канал." if is_signed else "✅ Сообщение отправлено в канал анонимно."
+    answer_text = f"{E['sent_text']}" if not is_signed else "👤 Неанонимное сообщение отправлено в канал."
     
     await message.answer(answer_text, reply_markup=get_main_keyboard(message.from_user.id, mode=mode))
     await message.answer("🔗 Ссылка на сообщение:", reply_markup=channel_kb)
