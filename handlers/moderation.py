@@ -6,7 +6,7 @@ from aiogram.types import CallbackQuery, Message, InlineKeyboardMarkup, InlineKe
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.enums import ParseMode
-from config import CHANNEL_ID, LOG_CHAT_ID, ADMIN_IDS
+from config import CHANNEL_ID, LOG_CHAT_ID, ADMIN_IDS, get_theme
 from services.storage import muted_users, save_muted
 from services.media import esc
 
@@ -98,6 +98,7 @@ async def cancel_mute_reason(message: Message, state: FSMContext):
 
 @moderation_router.message(MuteStates.waiting_for_reason)
 async def process_mute_reason(message: Message, state: FSMContext):
+    E = get_theme()
     if message.from_user.id not in ADMIN_IDS:
         return
     if message.text is None:
@@ -121,7 +122,7 @@ async def process_mute_reason(message: Message, state: FSMContext):
     muted_users[target_user_id] = mute_until
     await save_muted()
 
-    notification = f"⚠️ <b>Внимание!</b>\n\nАдминистрация ограничила вашу возможность отправлять сообщения на <b>{minutes} минут</b>."
+    notification = f"{E['fire']} <b>Внимание!</b>\n\nАдминистрация ограничила вашу возможность отправлять сообщения на <b>{minutes} минут</b>."
     if reason != "Не указана":
         notification += f"\n<b>Причина:</b> {esc(reason)}"
 
@@ -158,6 +159,7 @@ async def process_mute_reason(message: Message, state: FSMContext):
 
 @moderation_router.callback_query(F.data.startswith("unmute_"))
 async def unmute_handler(callback: CallbackQuery):
+    E = get_theme()
     if callback.from_user.id not in ADMIN_IDS:
         return await callback.answer("⛔ Нет доступа")
     if callback.message is None:
@@ -173,7 +175,7 @@ async def unmute_handler(callback: CallbackQuery):
         try:
             await callback.bot.send_message(
                 target_user_id,
-                "✅ <b>Хорошие новости!</b>\n\nОграничение на отправку сообщений снято. Вы снова можете писать.",
+                f"{E['ok']} <b>Хорошие новости!</b>\n\nОграничение на отправку сообщений снято. Вы снова можете писать.",
                 parse_mode=ParseMode.HTML
             )
         except Exception as e:
