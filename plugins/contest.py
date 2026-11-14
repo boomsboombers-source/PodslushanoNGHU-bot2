@@ -70,7 +70,6 @@ results_published = False
 contest_target = "channel"  # "channel" или "bot"
 
 contest_file_lock = asyncio.Lock()
-pending_reset = set()     # {admin_id, ...} — кто нажал «Сброс», ждём подтверждения
 
 
 def load_contest_data():
@@ -140,9 +139,9 @@ def _variant_exists(variant_num: int) -> bool:
 
 
 def _vote_kb(variant_num: int) -> InlineKeyboardMarkup:
+    # Оставили только одну кнопку для голосования
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=f"🗳 Голосовать за вариант {variant_num}", callback_data=f"vote_{variant_num}")],
-        [InlineKeyboardButton(text="🔁 Изменить голос", callback_data="change_vote")],
     ])
 
 
@@ -260,7 +259,7 @@ async def end_contest(message: Message):
         await message.answer(f"✅ Опубликовано {published_count} работ. Теперь участники могут голосовать!")
 
 
-@router.message((F.photo | F.document) & F.caption & F.caption.lower().startswith("!дополнить_вариант"), F.from_user.id.in_(ADMIN_IDS))
+@router.message((F.photo | F.document) & F.caption.lower().startswith("!дополнить_вариант"), F.from_user.id.in_(ADMIN_IDS))
 async def add_late_entry(message: Message):
     """Добавляет работу в идущее голосование (после !завершить_конкурс, до !результаты)."""
     global contest_entries
@@ -472,7 +471,7 @@ async def contest_help(message: Message):
     )
 
 
-@router.message(F.photo & F.caption & F.caption.lower().regexp(r"^!конкурс(\s|$)"), F.chat.type == "private")
+@router.message(F.photo & F.caption.lower().regexp(r"^!конкурс(\s|$)"), F.chat.type == "private")
 async def handle_contest_photo(message: Message):
     global contest_entries
 
@@ -509,7 +508,7 @@ async def handle_contest_photo(message: Message):
         logging.error(f"Не удалось уведомить лог-группу о конкурсе: {e}")
 
 
-@router.message(F.document & F.caption & F.caption.lower().regexp(r"^!конкурс(\s|$)"), F.chat.type == "private")
+@router.message(F.document & F.caption.lower().regexp(r"^!конкурс(\s|$)"), F.chat.type == "private")
 async def handle_contest_document(message: Message):
     global contest_entries
 
@@ -588,7 +587,7 @@ async def handle_reject(callback: CallbackQuery):
 
 
 # ==============================================================================
-# ================= ГОЛОСОВАНИЕ И СМЕНА ГОЛОСА =================================
+# ================= ГОЛОСОВАНИЕ (Смена голоса через повторное нажатие) =========
 # ==============================================================================
 
 @router.callback_query(F.data.startswith("vote_"))
@@ -609,55 +608,19 @@ async def handle_vote(callback: CallbackQuery):
     user_id = str(callback.from_user.id)
     current = contest_votes.get(user_id)
 
+    # Если уже голосует за этот вариант
     if current == variant_num:
         await callback.answer(f"ℹ️ Вы уже голосуете за вариант {variant_num}.", show_alert=True)
         return
 
+    # Если голосовал за другой — меняем (тихо, без сообщения в канал)
     if current is not None:
-        # Смена голоса через повторное нажатие — подтверждение не нужно, просто меняем
         contest_votes[user_id] = variant_num
         await save_contest_data()
         await callback.answer(f"🔁 Голос изменён: вариант {current} → {variant_num}.", show_alert=True)
         return
 
+    # Первый голос
     contest_votes[user_id] = variant_num
     await save_contest_data()
     await callback.answer(f"✅ Ваш голос за вариант {variant_num} принят!", show_alert=True)
-
-
-@router.callback_query(F.data == "change_vote")
-async def handle_change_vote(callback: CallbackQuery):
-    if results_published:
-        return await callback.answer("❌ Голосование завершено.", show_alert=True)
-    if not contest_entries:
-        return await callback.answer("❌ Нет активного голосования.", show_alert=True)
-
-    user_id = str(callback.from_user.id)
-    current = contest_votes.get(user_id)
-    nums = sorted({e.get("number", 0) for u, e in contest_entries.items() if u not in rejected_entries and e.get("number", 0) > 0})
-
-    if not nums:
-        return await callback.answer("❌ Нет доступных вариантов.", show_alert=True)
-
-    rows = []
-    for n in nums:
-        mark = " ✅" if current == n else ""
-        rows.append([InlineKeyboardButton(text=f"Вариант {n}{mark}", callback_data=f"vote_{n}")])
-    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="change_vote_back")])
-
-    kb = InlineKeyboardMarkup(inline_keyboard=rows)
-    text = "🔁 <b>Смена голоса</b>\n\nТекущий голос: " + (f"вариант {current}" if current else "нет") + "\nВыбери новый вариант:"
-    try:
-        await callback.message.answer(text, parse_mode=ParseMode.HTML, reply_markup=kb)
-    except Exception:
-        pass
-    await callback.answer()
-
-
-@router.callback_query(F.data == "change_vote_back")
-async def handle_change_vote_back(callback: CallbackQuery):
-    try:
-        await callback.message.delete()
-    except Exception:
-        pass
-    await callback.answer()
