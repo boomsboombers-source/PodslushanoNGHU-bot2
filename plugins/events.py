@@ -7,17 +7,18 @@
   • announce=False — «тихое» событие: в канал не напоминаем, но в !события показываем.
 
 Время (флаг has_time):
-  • has_time=True  — время указано явно, показываем его, шлём напоминание за час и утром.
+  • has_time=True  — время указано явно (можно интервал 13:00-16:00), шлём напоминание за час и утром.
   • has_time=False — время не указано, в списке время не показываем, шлём только утреннее.
 
 Команды (все — Админ + Модер):
-  !событие ДД.ММ [ЧЧ:ММ] Текст   — добавить событие с уведомлением
-  !событие_т ДД.ММ [ЧЧ:ММ] Текст — добавить событие без уведомления
-  !событие_режим ID              — переключить режим события (announce toggle)
-  !удалить_событие ID            — удалить событие
+  !событие ДД.ММ [ЧЧ:ММ[-ЧЧ:ММ]] Текст   — добавить событие с уведомлением
+  !событие_т ДД.ММ [ЧЧ:ММ[-ЧЧ:ММ]] Текст — добавить событие без уведомления
+  !событие_ред ID                         — редактировать событие
+  !событие_режим ID                       — переключить режим события
+  !удалить_событие ID                     — удалить событие
 
 Команда для всех:
-  !события                       — список ближайших событий
+  !события                                — список ближайших событий
 """
 
 import os
@@ -31,6 +32,8 @@ from zoneinfo import ZoneInfo
 from aiogram import Router, F
 from aiogram.types import Message
 from aiogram.enums import ParseMode
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
 
 from config import CHANNEL_ID, ADMIN_IDS, MODERATOR_IDS, DATA_DIR
 
@@ -39,8 +42,9 @@ PLUGIN_INFO = {
     "icon": "📅",
     "description": "Календарь событий с авто-напоминаниями в канал (можно отключать)",
     "commands": [
-        ("!событие ДД.ММ ЧЧ:ММ Текст", "добавить событие с уведомлением (админ, модер)"),
-        ("!событие_т ДД.ММ ЧЧ:ММ Текст", "добавить событие без уведомления (админ, модер)"),
+        ("!событие ДД.ММ ЧЧ:ММ-ЧЧ:ММ Текст", "добавить событие с уведомлением (админ, модер)"),
+        ("!событие_т ДД.ММ ЧЧ:ММ-ЧЧ:ММ Текст", "добавить событие без уведомления (админ, модер)"),
+        ("!событие_ред ID", "редактировать событие (админ, модер)"),
         ("!событие_режим ID", "переключить режим уведомлений у события (админ, модер)"),
         ("!события", "список ближайших событий (все)"),
         ("!удалить_событие ID", "удалить событие (админ, модер)"),
@@ -53,8 +57,8 @@ EVENTS_DIR = os.path.join(DATA_DIR, "events")
 os.makedirs(EVENTS_DIR, exist_ok=True)
 EVENTS_FILE = os.path.join(EVENTS_DIR, "events.json")
 
-# {"id": {"text": str, "datetime": ts, "has_time": bool, "notified_day": bool,
-#         "notified_hour": bool, "announce": bool}}
+# {"id": {"text": str, "datetime": ts, "has_time": bool, "time_end": str|None,
+#         "notified_day": bool, "notified_hour": bool, "announce": bool}}
 events = {}
 event_counter = 0
 events_lock = asyncio.Lock()
@@ -65,8 +69,13 @@ STAFF = ADMIN_IDS + MODERATOR_IDS
 _RE_EVENT = re.compile(r"^!событие(\s|$)", re.IGNORECASE)
 _RE_EVENT_T = re.compile(r"^!событие_т(\s|$)", re.IGNORECASE)
 _RE_EVENT_MODE = re.compile(r"^!событие_режим(\s|$)", re.IGNORECASE)
+_RE_EVENT_EDIT = re.compile(r"^!событие_ред(\s|$)", re.IGNORECASE)
 _RE_EVENTS_LIST = re.compile(r"^!события$", re.IGNORECASE)
 _RE_EVENT_DEL = re.compile(r"^!удалить_событие(\s|$)", re.IGNORECASE)
+
+
+class EditEventStates(StatesGroup):
+    waiting_for_new_data = State()
 
 
 # ==============================================================================
@@ -90,6 +99,8 @@ def load_events():
                     ev["notified_day"] = False
                 if ev.get("notified_hour") is None:
                     ev["notified_hour"] = False
+                if ev.get("time_end") is None:
+                    ev["time_end"] = None
         except Exception as e:
             logging.error(f"Ошибка загрузки events.json: {e}")
 
@@ -118,20 +129,33 @@ def _parse_event_args(body: str):
     Форматы:
       'ДД.ММ Текст'
       'ДД.ММ ЧЧ:ММ Текст'
-    Возвращает (target_dt, text, has_time) или (None, None, False).
+      'ДД.ММ ЧЧ:ММ-ЧЧ:ММ Текст'
+    Возвращает (target_dt, text, has_time, time_end) или (None, None, False, None).
     """
     parts = body.split(maxsplit=2)
     if len(parts) < 2:
-        return None, None, False
+        return None, None, False, None
     try:
         date_str = parts[0]
         has_time = len(parts) >= 2 and ":" in parts[1]
+        time_end = None
+        
         if has_time:
-            if len(parts) < 3:
-                return None, None, False
             time_str = parts[1]
-            text = parts[2]
-            dt_str = f"{date_str}.{datetime.now(NSK).year} {time_str}"
+            text = parts[2] if len(parts) > 2 else ""
+            
+            # Проверяем интервал
+            if "-" in time_str:
+                time_parts = time_str.split("-")
+                if len(time_parts) == 2:
+                    start_time = time_parts[0].strip()
+                    time_end = time_parts[1].strip()
+                else:
+                    return None, None, False, None
+            else:
+                start_time = time_str
+            
+            dt_str = f"{date_str}.{datetime.now(NSK).year} {start_time}"
             target_dt = datetime.strptime(dt_str, "%d.%m.%Y %H:%M")
         else:
             text = " ".join(parts[1:])
@@ -141,19 +165,19 @@ def _parse_event_args(body: str):
         target_dt = target_dt.replace(tzinfo=NSK)
         if target_dt < datetime.now(NSK):
             target_dt = target_dt.replace(year=target_dt.year + 1)
-        return target_dt, text.strip(), has_time
+        return target_dt, text.strip(), has_time, time_end
     except Exception:
-        return None, None, False
+        return None, None, False, None
 
 
 async def _add_event(message: Message, body: str, announce: bool):
     global event_counter
-    target_dt, text, has_time = _parse_event_args(body)
+    target_dt, text, has_time, time_end = _parse_event_args(body)
     if not target_dt or not text:
         example = "!событие_т" if not announce else "!событие"
         await message.answer(
-            f"❌ Формат: <code>{example} ДД.ММ [ЧЧ:ММ] Текст</code>\n"
-            f"Пример: <code>{example} 20.11 18:00 Концерт</code>",
+            f"❌ Формат: <code>{example} ДД.ММ [ЧЧ:ММ[-ЧЧ:ММ]] Текст</code>\n"
+            f"Пример: <code>{example} 20.11 13:00-16:00 Концерт</code>",
             parse_mode=ParseMode.HTML
         )
         return
@@ -164,6 +188,7 @@ async def _add_event(message: Message, body: str, announce: bool):
         "text": text,
         "datetime": target_dt.timestamp(),
         "has_time": has_time,
+        "time_end": time_end,
         "notified_day": False,
         "notified_hour": False,
         "announce": announce,
@@ -171,7 +196,14 @@ async def _add_event(message: Message, body: str, announce: bool):
     await save_events()
 
     mode = "📢 с уведомлением в канал" if announce else "🔕 без уведомления"
-    when = target_dt.strftime("%d.%m.%Y %H:%M") if has_time else target_dt.strftime("%d.%m.%Y") + " (без времени)"
+    if has_time:
+        if time_end:
+            when = target_dt.strftime("%d.%m.%Y %H:%M") + f"-{time_end}"
+        else:
+            when = target_dt.strftime("%d.%m.%Y %H:%M")
+    else:
+        when = target_dt.strftime("%d.%m.%Y") + " (без времени)"
+        
     await message.answer(
         f"✅ Событие добавлено!\n"
         f"ID: <code>{ev_id}</code>\n"
@@ -190,6 +222,83 @@ async def _add_event(message: Message, body: str, announce: bool):
 async def add_event_silent(message: Message):
     body = message.text[len("!событие_т"):].strip()
     await _add_event(message, body, announce=False)
+
+
+@router.message(F.text.regexp(_RE_EVENT_EDIT), F.from_user.id.in_(STAFF))
+async def edit_event_start(message: Message, state: FSMContext):
+    parts = message.text.split(maxsplit=1)
+    if len(parts) < 2:
+        await message.answer("❌ Формат: <code>!событие_ред ID</code>", parse_mode=ParseMode.HTML)
+        return
+    ev_id = parts[1].strip()
+    if ev_id not in events:
+        await message.answer(f"⚠️ Событие с ID <code>{ev_id}</code> не найдено.", parse_mode=ParseMode.HTML)
+        return
+
+    await state.update_data(edit_ev_id=ev_id)
+    await state.set_state(EditEventStates.waiting_for_new_data)
+    await message.answer(
+        f"✍️ Пришли новые данные для события <code>{ev_id}</code> в формате:\n"
+        f"<code>ДД.ММ [ЧЧ:ММ[-ЧЧ:ММ]] Новый текст</code>\n\n"
+        f"Или отправь <code>/cancel</code> для отмены.",
+        parse_mode=ParseMode.HTML
+    )
+
+
+@router.message(EditEventStates.waiting_for_new_data, F.text == "/cancel")
+async def cancel_edit_event(message: Message, state: FSMContext):
+    await state.clear()
+    await message.answer("❌ Редактирование отменено.")
+
+
+@router.message(EditEventStates.waiting_for_new_data)
+async def process_edit_event(message: Message, state: FSMContext):
+    if message.from_user.id not in STAFF:
+        return
+    if message.text is None:
+        await message.answer("❌ Пришли новые данные текстом или /cancel для отмены.")
+        return
+
+    data = await state.get_data()
+    ev_id = data.get("edit_ev_id")
+    if not ev_id or ev_id not in events:
+        await message.answer("❌ Ошибка: событие не найдено.")
+        await state.clear()
+        return
+
+    target_dt, text, has_time, time_end = _parse_event_args(message.text)
+    if not target_dt or not text:
+        await message.answer(
+            "❌ Не удалось разобрать данные.\n"
+            "Формат: <code>ДД.ММ [ЧЧ:ММ[-ЧЧ:ММ]] Новый текст</code>",
+            parse_mode=ParseMode.HTML
+        )
+        return
+
+    ev = events[ev_id]
+    ev["text"] = text
+    ev["datetime"] = target_dt.timestamp()
+    ev["has_time"] = has_time
+    ev["time_end"] = time_end
+    # Сбрасываем флаги, чтобы напоминания сработали заново
+    ev["notified_day"] = False
+    ev["notified_hour"] = False
+
+    await save_events()
+    await state.clear()
+
+    when = target_dt.strftime("%d.%m.%Y %H:%M")
+    if time_end:
+        when += f"-{time_end}"
+    if not has_time:
+        when = target_dt.strftime("%d.%m.%Y") + " (без времени)"
+
+    await message.answer(
+        f"✅ Событие <code>{ev_id}</code> успешно обновлено!\n"
+        f"Когда: {when}\n"
+        f"Что: {text}",
+        parse_mode=ParseMode.HTML
+    )
 
 
 @router.message(F.text.regexp(_RE_EVENT_MODE), F.from_user.id.in_(STAFF))
@@ -250,6 +359,8 @@ async def list_events(message: Message):
         dt = datetime.fromtimestamp(ev["datetime"], NSK)
         if ev.get("has_time", True):
             when = dt.strftime("%d.%m %H:%M")
+            if ev.get("time_end"):
+                when += f"-{ev['time_end']}"
         else:
             when = dt.strftime("%d.%m")
         line = f"{idx}. <b>{when}</b> — {ev['text']}"
@@ -299,15 +410,19 @@ async def check_events_loop(bot):
                 diff_hours = (target_ts - now_ts) / 3600
                 ev_dt = datetime.fromtimestamp(target_ts, NSK)
                 has_time = ev.get("has_time", True)
+                time_end = ev.get("time_end")
 
                 # 1. За час — только если время указано явно
                 if has_time and 0.9 <= diff_hours <= 1.1 and not ev.get("notified_hour"):
+                    time_str = ev_dt.strftime('%H:%M')
+                    if time_end:
+                        time_str += f" (до {time_end})"
                     try:
                         await bot.send_message(
                             CHANNEL_ID,
                             f"🔔 <b>Напоминание:</b> через час начнется событие!\n\n"
                             f"📌 <b>{ev['text']}</b>\n"
-                            f"🕒 В {ev_dt.strftime('%H:%M')}",
+                            f"🕒 В {time_str}",
                             parse_mode=ParseMode.HTML
                         )
                         ev["notified_hour"] = True
@@ -318,7 +433,13 @@ async def check_events_loop(bot):
                 # 2. Утром в день события
                 elif (now.hour >= 8 and not ev.get("notified_day")
                       and ev_dt.date() == now.date() and target_ts > now_ts):
-                    time_line = f"\n🕒 В {ev_dt.strftime('%H:%M')}" if has_time else ""
+                    if has_time:
+                        time_str = ev_dt.strftime('%H:%M')
+                        if time_end:
+                            time_str += f"-{time_end}"
+                        time_line = f"\n🕒 В {time_str}"
+                    else:
+                        time_line = ""
                     try:
                         await bot.send_message(
                             CHANNEL_ID,
