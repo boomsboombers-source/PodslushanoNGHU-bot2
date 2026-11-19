@@ -324,7 +324,7 @@ async def save_changes_photo(message: Message, state: FSMContext):
     try:
         with open(SCHEDULE2_FILE, "w", encoding="utf-8") as f:
             f.write(message.photo[-1].file_id)
-        await message.answer(f"{E['ok']} Замены успешно обновлены!", reply_markup=get_main_keyboard(message.from_user.id, mode=get_user_mode(message.from_user.id)))
+        await message.answer(f"{E['ok']} Замены успешно обновлены!", parse_mode=ParseMode.HTML, reply_markup=get_main_keyboard(message.from_user.id, mode=get_user_mode(message.from_user.id)))
     except Exception as e:
         await message.answer(f"❌ Ошибка сохранения: {e}", reply_markup=get_main_keyboard(message.from_user.id, mode=get_user_mode(message.from_user.id)))
     finally:
@@ -366,7 +366,7 @@ async def set_schedule2(message: Message):
     try:
         with open(SCHEDULE2_FILE, "w", encoding="utf-8") as f:
             f.write(message.photo[-1].file_id)
-        await message.answer(f"{E['ok']} Замены обновлены!")
+        await message.answer(f"{E['ok']} Замены обновлены!", parse_mode=ParseMode.HTML)
     except Exception as e:
         await message.answer(f"❌ Ошибка сохранения: {e}")
 
