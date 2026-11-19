@@ -122,9 +122,15 @@ THEMES = {
         "reply_text": "🦇 Твой ответ опубликован. Не пугай людей!"
     },
     "default": {
-        "hi": "👋", "calendar": "📅", "doc": "📋", "ok": "✅", "cancel": "❌", "fire": "🔥", "star": "⭐",
-        "greeting": "Этот бот — официальный анонимный канал связи с <b>Подслушано НГХУ</b>.",
-        "sent_text": "Сообщение отправлено в канал анонимно.",
-        "reply_text": "Твой ответ опубликован в канале!"
+        "hi": '<tg-emoji emoji-id="5413694143601842851">👋</tg-emoji>',
+        "calendar": '<tg-emoji emoji-id="5413879192267805083">📅</tg-emoji>',
+        "doc": '<tg-emoji emoji-id="5316825511337408327">📋</tg-emoji>',
+        "ok": '<tg-emoji emoji-id="5370893703575511656">✅</tg-emoji>',
+        "cancel": '<tg-emoji emoji-id="5337097679665112976">❌</tg-emoji>',
+        "fire": '<tg-emoji emoji-id="5424972470023104089">🔥</tg-emoji>',
+        "star": '<tg-emoji emoji-id="5418143957353766660">⭐️</tg-emoji>',
+        "greeting": '<tg-emoji emoji-id="5413694143601842851">👋</tg-emoji> Этот бот — официальный анонимный канал связи с <b>Подслушано НГХУ</b>.',
+        "sent_text": '<tg-emoji emoji-id="5370893703575511656">✅</tg-emoji> Сообщение отправлено в канал анонимно.',
+        "reply_text": '<tg-emoji emoji-id="5370893703575511656">✅</tg-emoji> Твой ответ опубликован в канале!'
     }
 }
