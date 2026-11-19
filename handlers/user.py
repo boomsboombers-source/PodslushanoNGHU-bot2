@@ -94,7 +94,7 @@ async def cmd_start(message: Message):
         return
 
     if not os.path.exists(WELCOME_IMAGE):
-        await message.answer(f"{E['hi']} Привет! Бот работает.", reply_markup=get_main_keyboard(message.from_user.id, mode=mode))
+        await message.answer(f"{E['hi']} Привет! Бот работает.", parse_mode=ParseMode.HTML, reply_markup=get_main_keyboard(message.from_user.id, mode=mode))
     else:
         try:
             photo = FSInputFile(WELCOME_IMAGE)
@@ -122,7 +122,7 @@ async def cmd_start(message: Message):
             )
         except Exception as e:
             logging.error(f"Ошибка /start: {e}")
-            await message.answer(f"{E['hi']} Привет! Бот работает.", reply_markup=get_main_keyboard(message.from_user.id, mode=mode))
+            await message.answer(f"{E['hi']} Привет! Бот работает.", parse_mode=ParseMode.HTML, reply_markup=get_main_keyboard(message.from_user.id, mode=mode))
 
     if mode == "admin" and start_arg == "admin":
         from handlers.admin import admin_panel
@@ -369,7 +369,7 @@ async def handle_all_messages(message: Message):
 
             channel_kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="📢 Перейти к сообщению", url=reply_link)]])
             
-            await message.answer(f"{E['reply_text']}", reply_markup=get_main_keyboard(message.from_user.id, mode=mode))
+            await message.answer(f"{E['reply_text']}", parse_mode=ParseMode.HTML, reply_markup=get_main_keyboard(message.from_user.id, mode=mode))
             await message.answer("🔗 Ссылка на пост:", reply_markup=channel_kb)
         except Exception as e:
             logging.error(f"Ошибка ответа: {e}")
@@ -430,7 +430,7 @@ async def handle_all_messages(message: Message):
     channel_kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="📢 Перейти к сообщению", url=msg_link)]])
     answer_text = f"{E['sent_text']}" if not is_signed else "👤 Неанонимное сообщение отправлено в канал."
     
-    await message.answer(answer_text, reply_markup=get_main_keyboard(message.from_user.id, mode=mode))
+    await message.answer(answer_text, parse_mode=ParseMode.HTML, reply_markup=get_main_keyboard(message.from_user.id, mode=mode))
     await message.answer("🔗 Ссылка на сообщение:", reply_markup=channel_kb)
 
 
