@@ -312,7 +312,7 @@ async def save_schedule_photo(message: Message, state: FSMContext):
     try:
         with open(SCHEDULE_FILE, "w", encoding="utf-8") as f:
             f.write(message.photo[-1].file_id)
-        await message.answer(f"{E['ok']} Расписание успешно обновлено!", reply_markup=get_main_keyboard(message.from_user.id, mode=get_user_mode(message.from_user.id)))
+        await message.answer(f"{E['ok']} Расписание успешно обновлено!", parse_mode=ParseMode.HTML, reply_markup=get_main_keyboard(message.from_user.id, mode=get_user_mode(message.from_user.id)))
     except Exception as e:
         await message.answer(f"❌ Ошибка сохранения: {e}", reply_markup=get_main_keyboard(message.from_user.id, mode=get_user_mode(message.from_user.id)))
     finally:
@@ -336,7 +336,7 @@ async def catch_wrong_input(message: Message, state: FSMContext):
     E = get_theme()
     if message.text and message.text.strip() == "❌ Отмена":
         await state.clear()
-        await message.answer(f"{E['cancel']} Действие отменено.", reply_markup=get_main_keyboard(message.from_user.id, mode=get_user_mode(message.from_user.id)))
+        await message.answer(f"{E['cancel']} Действие отменено.", parse_mode=ParseMode.HTML, reply_markup=get_main_keyboard(message.from_user.id, mode=get_user_mode(message.from_user.id)))
         return
     await message.answer("⚠️ Ожидается фотография (или нажмите «❌ Отмена»).", reply_markup=ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="❌ Отмена")]], resize_keyboard=True))
 
@@ -353,7 +353,7 @@ async def set_schedule(message: Message):
     try:
         with open(SCHEDULE_FILE, "w", encoding="utf-8") as f:
             f.write(message.photo[-1].file_id)
-        await message.answer(f"{E['ok']} Расписание успешно обновлено!")
+        await message.answer(f"{E['ok']} Расписание успешно обновлено!", parse_mode=ParseMode.HTML)
     except Exception as e:
         await message.answer(f"❌ Ошибка сохранения: {e}")
 
