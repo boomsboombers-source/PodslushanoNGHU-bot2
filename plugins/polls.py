@@ -168,8 +168,8 @@ async def suggest_poll_multiline(message: Message):
     preview = "📊 <b>Проверь свой опрос:</b>\n\n" + "\n".join(preview_lines) + "\n\nОтправить на модерацию?"
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✅ Отправить", callback_data=f"poll_confirm_{message.from_user.id}")],
-        [InlineKeyboardButton(text="❌ Отмена", callback_data=f"poll_cancel_{message.from_user.id}")],
+        [InlineKeyboardButton(text="✅ Отправить", callback_data=f"poll_confirm_{message.from_user.id}", style="success")],
+        [InlineKeyboardButton(text="❌ Отмена", callback_data=f"poll_cancel_{message.from_user.id}", style="danger")],
     ])
     await message.answer(preview, parse_mode=ParseMode.HTML, reply_markup=kb)
 
