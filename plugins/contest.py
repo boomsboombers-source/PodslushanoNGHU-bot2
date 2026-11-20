@@ -412,8 +412,8 @@ async def contest_status(message: Message):
 @router.message(F.text.lower().startswith("!конкурс_сброс"), F.from_user.id.in_(ADMIN_IDS))
 async def contest_reset(message: Message):
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✅ Да, сбросить всё", callback_data="contest_reset_confirm")],
-        [InlineKeyboardButton(text="❌ Отмена", callback_data="contest_reset_cancel")],
+        [InlineKeyboardButton(text="✅ Да, сбросить всё", callback_data="contest_reset_confirm", style="success")],
+        [InlineKeyboardButton(text="❌ Отмена", callback_data="contest_reset_cancel", style="danger")],
     ])
     await message.answer(
         "⚠️ <b>Полный сброс конкурса</b>\n\n"
@@ -500,7 +500,7 @@ async def handle_contest_photo(message: Message):
         now = datetime.now(ZoneInfo("Asia/Novosibirsk")).strftime("%d.%m.%Y %H:%M:%S") # Импортируй ZoneInfo и datetime, если их нет
         
         log_kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="❌ Отклонить вариант", callback_data=f"reject_{user_id}")]
+            [InlineKeyboardButton(text="❌ Отклонить вариант", callback_data=f"reject_{user_id}", style="danger")]
         ])
         
         log_caption = (
@@ -556,7 +556,7 @@ async def handle_contest_document(message: Message):
         now = datetime.now(ZoneInfo("Asia/Novosibirsk")).strftime("%d.%m.%Y %H:%M:%S")
         
         log_kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="❌ Отклонить вариант", callback_data=f"reject_{user_id}")]
+            [InlineKeyboardButton(text="❌ Отклонить вариант", callback_data=f"reject_{user_id}", style="danger")]
         ])
         
         log_caption = (
