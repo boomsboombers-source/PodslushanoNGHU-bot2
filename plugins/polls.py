@@ -198,8 +198,8 @@ async def confirm_poll(callback: CallbackQuery):
     await save_polls()
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✅ Опубликовать", callback_data=f"poll_approve_{poll_id}")],
-        [InlineKeyboardButton(text="❌ Отклонить", callback_data=f"poll_reject_{poll_id}")],
+        [InlineKeyboardButton(text="✅ Опубликовать", callback_data=f"poll_approve_{poll_id}", style="success")],
+        [InlineKeyboardButton(text="❌ Отклонить", callback_data=f"poll_reject_{poll_id}", style="danger")],
     ])
     text = (
         f"📊 <b>Новый опрос на модерации</b>\n\n"
